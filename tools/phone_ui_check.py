@@ -73,7 +73,7 @@ STATUS = {
     "speaking": False, "speaking_pc": False, "thinking": False, "ai": "grok-4.3",
     "learned": {"things": [], "hud": True, "level": 152, "level_from": "screen"},
     "live": True, "call_greets": True, "recording": {"state": "off"}, "attitude": "savage",
-    "tone": None, "age": None,
+    "tone": None,
     "voices": [
         {"id": "v1", "name": "Rachel", "about": "female · calm · american"},
         {"id": "v2", "name": "Adam", "about": "male · deep · american"},
@@ -143,15 +143,12 @@ def share_view():
             "export": {"format": 1, "install_id": "6f1c2a9e-3b7d-4c55-9a0e-2d8f1b7c4e31" if on else None, "app_version": "0.9.0",
                        "sessions": [SHARED_SESSION]}}
 
-# The bar of how it talks, as the PC's own data has it (each level's name,
-# and whether it is for adults only), and the stand-in's tone and age:
-# set where the bar is, talking at `now`; of age in Israel unless told.
-LEVELS = [{"id": l["id"], "adults_only": l["adults_only"]}
+# The bar of how it talks, as the PC's own data has it (each level's name),
+# and the stand-in's tone: set where the bar is, talking at `now`.
+LEVELS = [{"id": l["id"]}
           for l in json.load(open(os.path.join(REPO, "src", "companion", "spectrum.json"), encoding="utf-8"))["levels"]]
 def tone(set_, now=None): return {"levels": LEVELS, "set": set_, "now": now or set_}
-def of_age(**change): return dict({"age": 18, "country": "IL", "known": True, "ask": False, "answered": True, "adult": True}, **change)
 STATUS["tone"] = tone("savage")
-STATUS["age"] = of_age()
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -198,20 +195,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._log(body)
         path = urlparse(self.path).path
         if path == "/api/tone":
-            # As the PC does: the bar set, the level held at the last open
-            # one for a player not of age.
+            # As the PC does: the bar set, and it talks there.
             ids = [l["id"] for l in LEVELS]
-            at = ids.index((body or {}).get("tone"))
-            first = [l["adults_only"] for l in LEVELS].index(True)
-            STATUS["tone"] = tone(ids[at], ids[at if STATUS["age"]["adult"] else min(at, first - 1)])
-            self._send(200, b'{"ok":true}', "application/json")
-        elif path == "/api/age":
-            adult = (body or {}).get("adult") is True
-            STATUS["age"] = dict(STATUS["age"], adult=adult, ask=False, answered=True)
-            ids = [l["id"] for l in LEVELS]
-            first = [l["adults_only"] for l in LEVELS].index(True)
-            at = ids.index(STATUS["tone"]["set"])
-            STATUS["tone"] = tone(ids[at], ids[at if adult else min(at, first - 1)])
+            STATUS["tone"] = tone(ids[ids.index((body or {}).get("tone"))])
             self._send(200, b'{"ok":true}', "application/json")
         elif path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
         elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "tone": "savage"}).encode(), "application/json")
@@ -515,20 +501,14 @@ def ui_checks(browser):
     page.close()
 
 def tone_checks(browser):
-    """The bar of how it talks, and the age question: the bar shows where it
-    really talks (the PC holds a player not known to be of age at the last
-    level open to all), moving it posts the level, the question comes from
-    the PC (with the country, by name) only once the bar is set past the
-    levels open to all, a player who never answered is asked when they move
-    it there, one who said no is not asked again for moving it (the lock
-    says why, and offers to change the answer) — in English and Hebrew."""
+    """The bar of how it talks: it shows where it talks, moving it posts the
+    level (a finger holding it keeps it where the finger is), each level's
+    words show under it, no level asks anyone's age (none swears), and it
+    runs the same way in English and in Hebrew."""
     reset_pc()
     ids = [l["id"] for l in LEVELS]
-    open_id = LEVELS[[l["adults_only"] for l in LEVELS].index(True) - 1]["id"]
-    wild_id = LEVELS[[l["adults_only"] for l in LEVELS].index(True)]["id"]
     wildest = ids[-1]
-    STATUS["tone"] = tone(wild_id)
-    STATUS["age"] = of_age()
+    STATUS["tone"] = tone("savage")
     page = browser.new_page(viewport={"width": 390, "height": 844})
     watch(page)
     page.goto(f"http://127.0.0.1:{port}/?k=test")
@@ -536,12 +516,11 @@ def tone_checks(browser):
     def move_to(level_id):
         page.evaluate("""(at) => { const bar = document.querySelector("#toneBar"); bar.value = String(at);
           bar.dispatchEvent(new Event("input")); bar.dispatchEvent(new Event("change")); }""", ids.index(level_id))
-    # Of age: no question, no lock; the bar where it is set, its words below.
-    assert page.is_hidden("#ageCard")
+    # The bar where it is set, its words below; nothing asks for an age.
     assert page.get_attribute("#toneBar", "max") == str(len(LEVELS) - 1)
-    assert page.input_value("#toneBar") == str(ids.index(wild_id))
-    assert (page.inner_text("#toneName"), page.inner_text("#toneHint")) == ("Savage", "Swears and roasts you, personally."), page.inner_text(".tone-now")
-    assert page.is_hidden("#toneLock")
+    assert page.input_value("#toneBar") == str(ids.index("savage"))
+    assert (page.inner_text("#toneName"), page.inner_text("#toneHint")) == ("Savage", "Roasts you hard and personally, still no swearing."), page.inner_text(".tone-now")
+    assert page.locator("#ageCard").count() == 0 and page.locator("#toneLock").count() == 0, "the page still asks for an age"
     assert page.inner_text(".tone .ends").split("\n") == ["For kids", "Wildest"], page.inner_text(".tone .ends")
     page.locator("#toneBar").scroll_into_view_if_needed()
     page.screenshot(path=os.path.join(SHOTS, "phone-tone.png"), full_page=True)
@@ -552,7 +531,7 @@ def tone_checks(browser):
     knob = page.locator("#toneKnob").bounding_box()["width"]
     y = box["y"] + box["height"] / 2
     def x_of(i): return box["x"] + knob / 2 + i / (len(ids) - 1) * (box["width"] - knob)
-    here = ids.index(wild_id)
+    here = ids.index("savage")
     t_hold = time.time()
     page.mouse.move(x_of(here), y)
     page.mouse.down()
@@ -566,101 +545,29 @@ def tone_checks(browser):
     assert not any(r["path"] == "/api/tone" for r in requests_since(t_hold)), "a level was posted before the finger let go"
     page.mouse.up()
     wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t_hold, "/api/tone")), 3, "letting go did not post the level")
-    # Moved to the wildest: the level posted, by name.
+    # The wildest, for anyone: it talks there, and its words say how.
+    wait_for(lambda: STATUS["tone"]["now"] == wildest, 3, "the PC was not moved to the wildest")
+    wait_for(lambda: page.inner_text("#toneHint") == "Over-the-top, theatrical roasting: loud and merciless, but clean.", 3, ("the wildest's words", page.inner_text("#toneHint")))
+    # Moved down by name: posted.
     t0 = time.time()
-    move_to(wildest)
-    wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t0, "/api/tone")), 3, "moving the bar did not post the level")
-    wait_for(lambda: page.inner_text("#toneName") == "Unhinged", 3, ("the bar moved, its words did not", page.inner_text("#toneName")))
-    assert page.is_hidden("#ageCard"), "a player of age was asked"
-    # Never answered, the bar set past the open levels (savage, from before
-    # the bar): the PC holds it at the last open level and asks — once where
-    # they are is known, on the main screen, with the country by name.
-    STATUS["age"] = of_age(adult=False, ask=True, answered=False, known=False)
-    STATUS["tone"] = tone(wild_id, open_id)
-    page.wait_for_timeout(1200)
-    assert page.is_hidden("#ageCard"), "asked before the place was known"
-    STATUS["age"] = of_age(adult=False, ask=True, answered=False)
-    wait_for(lambda: page.is_visible("#ageCard"), 3, "the age question did not show")
-    assert page.inner_text("#ageQ") == "Are you 18 or older?", page.inner_text("#ageQ")
-    assert page.inner_text("#ageIn") == "Israel: adulthood starts at 18.", page.inner_text("#ageIn")
-    page.screenshot(path=os.path.join(SHOTS, "phone-age.png"), full_page=True)
-    t1 = time.time()
-    page.click("#ageYes")
-    wait_for(lambda: any(r["body"] == {"age": 18, "adult": True} for r in requests_since(t1, "/api/age")), 3, "yes was not posted with the age")
-    assert page.is_hidden("#ageCard")
-    page.wait_for_timeout(1200)
-    assert page.is_hidden("#ageCard"), "asked again after answering"
-    assert STATUS["tone"]["now"] == wild_id, STATUS["tone"]
-    # Said no: not asked again; the bar where it really talks, the wild end
-    # locked and saying so, with a way to change the answer. Moving the bar
-    # past the lock posts the level (the PC moves to it if the answer ever
-    # changes) and does not ask again.
-    STATUS["age"] = of_age(adult=False)
-    STATUS["tone"] = tone(wild_id, open_id)
-    page.wait_for_timeout(1200)
-    assert page.is_hidden("#ageCard")
-    wait_for(lambda: page.inner_text("#toneName") == "Blunt", 3, ("not shown where it really talks", page.inner_text("#toneName")))
-    assert page.input_value("#toneBar") == str(ids.index(open_id)), page.input_value("#toneBar")
-    assert page.is_visible("#toneLock")
-    assert page.inner_text("#toneLockText") == "🔒 Past Blunt is for adults (18+).", page.inner_text("#toneLockText")
-    assert page.inner_text("#toneAge") == "Change my answer", page.inner_text("#toneAge")
-    page.locator("#toneLock").scroll_into_view_if_needed()
-    page.screenshot(path=os.path.join(SHOTS, "phone-tone-locked.png"), full_page=True)
-    t2 = time.time()
-    move_to(wildest)
-    wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t2, "/api/tone")), 3, "moving past the lock did not post the level")
-    page.wait_for_timeout(800)
-    assert page.is_hidden("#ageCard"), "someone who said no was asked again for moving the bar"
-    # "Change my answer" asks again, right there.
-    page.click("#toneAge")
-    wait_for(lambda: page.is_visible("#ageCard") and page.is_hidden("#sheet"), 3, "changing the answer did not ask again")
-    t3 = time.time()
-    page.click("#ageNo")
-    wait_for(lambda: any(r["body"] == {"age": 18, "adult": False} for r in requests_since(t3, "/api/age")), 3, "no was not posted with the age")
-    assert page.is_hidden("#ageCard")
-    page.wait_for_timeout(1200)
-    assert page.is_hidden("#ageCard"), "asked again after answering"
-    # Never answered, the bar at a level open to all (the usual): nothing is
-    # asked; the lock's link is the question, and moving the bar past the
-    # lock asks it.
-    STATUS["age"] = of_age(adult=False, answered=False)
-    STATUS["tone"] = tone(open_id)
-    page.wait_for_timeout(1200)
-    assert page.is_hidden("#ageCard"), "asked with the bar at a level open to all"
-    wait_for(lambda: page.inner_text("#toneAge") == "Are you 18 or older?", 3, ("the lock's link is not the question", page.inner_text("#toneAge")))
-    t4 = time.time()
-    move_to(wild_id)
-    wait_for(lambda: any((r["body"] or {}).get("tone") == wild_id for r in requests_since(t4, "/api/tone")), 3, "moving past the lock did not post the level")
-    wait_for(lambda: page.is_visible("#ageCard"), 3, "moving the bar past the lock did not ask someone never asked")
-    # Asked right under the bar, where the finger is.
-    bar, card = page.locator("#toneCard").bounding_box(), page.locator("#ageCard").bounding_box()
-    assert 0 <= card["y"] - (bar["y"] + bar["height"]) < 40, (bar, card)
-    page.click("#ageYes")
-    wait_for(lambda: STATUS["age"]["adult"], 3, "yes did not reach the PC")
-    # Hebrew: the question and the lock in the page's Hebrew, right to left.
-    STATUS["age"] = of_age(adult=False, ask=True, answered=False)
-    STATUS["tone"] = tone(wild_id, open_id)
+    move_to("blunt")
+    wait_for(lambda: any((r["body"] or {}).get("tone") == "blunt" for r in requests_since(t0, "/api/tone")), 3, "moving the bar did not post the level")
+    wait_for(lambda: page.inner_text("#toneName") == "Blunt", 3, ("the bar moved, its words did not", page.inner_text("#toneName")))
+    assert not requests_since(t0, "/api/age"), "an age was asked for"
+    # Hebrew: the level's words in the page's Hebrew; the bar runs the same
+    # way as in every language, on a right-to-left page too: the gentlest on
+    # the left, the wildest on the right.
     page.select_option("#lang", "he-IL")
-    wait_for(lambda: page.is_visible("#ageCard"), 6, "the age question did not show in Hebrew")
+    wait_for(lambda: page.inner_text("#toneName") == "ישיר", 6, ("the level's name not in Hebrew", page.inner_text("#toneName")))
     assert page.get_attribute("html", "dir") == "rtl"
-    assert page.inner_text("#ageQ") == "האם גילך 18 ומעלה?", page.inner_text("#ageQ")
-    assert page.inner_text("#ageIn") == "ישראל: בגירות מגיל 18.", page.inner_text("#ageIn")
-    page.screenshot(path=os.path.join(SHOTS, "phone-age-he.png"), full_page=True)
-    STATUS["age"] = of_age(adult=False)
-    wait_for(lambda: page.inner_text("#toneName") == "ישיר", 3, ("the level's name not in Hebrew", page.inner_text("#toneName")))
-    # (Answered now: the lock's link changes the answer, once the status says so.)
-    wait_for(lambda: page.inner_text("#toneAge") == "לשנות את התשובה", 3, ("the lock's link", page.inner_text("#toneAge")))
-    assert page.inner_text("#toneLockText") == "🔒 מעבר ל„ישיר” זה למבוגרים בלבד (18+).", page.inner_text("#toneLockText")
-    # The bar runs the same way as in every language, on a right-to-left
-    # page too: the gentlest on the left, the wildest on the right.
+    assert page.inner_text("#toneHint") == "ישיר ושתלטן, יורד על מהלכים גרועים, בלי קללות.", page.inner_text("#toneHint")
     assert page.evaluate("getComputedStyle(document.querySelector('#toneBar')).direction") == "ltr"
     low, high = page.locator(".tone .ends span").all()
     assert (low.inner_text(), high.inner_text()) == ("לילדים", "הכי פרוע"), (low.inner_text(), high.inner_text())
     assert low.bounding_box()["x"] < high.bounding_box()["x"], "the gentlest end of the bar is not on the left"
-    page.locator("#toneLock").scroll_into_view_if_needed()
-    page.screenshot(path=os.path.join(SHOTS, "phone-tone-locked-he.png"), full_page=True)
-    STATUS["tone"] = tone(wild_id)
-    STATUS["age"] = of_age()
+    page.locator("#toneBar").scroll_into_view_if_needed()
+    page.screenshot(path=os.path.join(SHOTS, "phone-tone-he.png"), full_page=True)
+    STATUS["tone"] = tone("savage")
     page.close()
 
 def listening_page(browser):
@@ -1107,9 +1014,9 @@ def live_checks(browser):
     wait_for(lambda: items_with("HP's at 25%"), 2, "the fresh warning was not handed to the call")
     wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Drink, HP's at 12%."} for r in requests_since(t_stalled, "/api/turn")), 2, "the PC was not told of the late line")
     event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
-    # The level it talks at changed on the PC (the bar here, the age
-    # answered, or the player objecting to the tone): the call gets its
-    # instructions again and goes on, not started over.
+    # The level it talks at changed on the PC (the bar here, or the player
+    # asking to be talked to another way): the call gets its instructions
+    # again and goes on, not started over.
     t1 = time.time()
     STATUS["tone"] = tone("friendly")
     wait_for(lambda: sent("session.update"), 4, "the call was not retuned to the new level")

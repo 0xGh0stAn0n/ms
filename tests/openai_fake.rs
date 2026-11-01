@@ -2218,8 +2218,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
         "Easy Zakum needs level 50.",
         ms::ai::knowledge::Source::Player,
     );
-    // The bar set to savage on the phone, by a player who said they are of
-    // age (an age no place asks more than).
+    // The bar set to savage on the phone.
     {
         let mut memory = learning.memory();
         memory.tone = Some(
@@ -2228,10 +2227,6 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
                 .id
                 .clone(),
         );
-        memory.age = Some(ms::companion::age::Answer {
-            age: 99,
-            adult: true,
-        });
         memory.retune();
     }
     let mut brain = Brain::new();

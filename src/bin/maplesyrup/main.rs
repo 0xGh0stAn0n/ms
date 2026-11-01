@@ -35,7 +35,6 @@ use ms::app::panel;
 use ms::app::screen::{self, LogLine};
 use ms::app::session::{self, Session};
 use ms::capture::{Captured, GameCapture};
-use ms::companion::age::{Ages, Gate};
 use ms::companion::commands::{self, Heard};
 use ms::companion::spectrum::{Level, Spectrum};
 use ms::companion::{About, Action, Command, Companion, GameView, Kind, Observation, Settings};
@@ -2226,8 +2225,8 @@ fn set_coaching(
     );
 }
 
-/// The bar of how it talks, for the phone: its levels (with which are for
-/// adults only), where the player set it, and the level it talks at now.
+/// The bar of how it talks, for the phone: its levels, where the player set
+/// it, and the level it talks at now.
 fn tone_status(learning: &ai::Learning) -> serde_json::Value {
     let spectrum = Spectrum::get();
     let memory = learning.memory();
@@ -2238,32 +2237,11 @@ fn tone_status(learning: &ai::Learning) -> serde_json::Value {
     })
 }
 
-/// The age question, for the phone: the age of an adult where the player
-/// is, the country it was found for, whether where they are is known yet
-/// (looked up this start; until then nothing is asked), whether to ask
-/// (only once the bar is set past the levels open to all, and only while
-/// their answer does not cover that age), whether they answered at all,
-/// and whether they are of age.
-fn age_status(learning: &ai::Learning, place_settled: bool) -> serde_json::Value {
-    let memory = learning.memory();
-    let gate = memory.gate();
-    let past_open = memory.tone_set() > Spectrum::get().open();
-    json!({
-        "age": memory.age_required(),
-        "country": memory.place.as_ref().map(|p| p.country.clone()),
-        "known": place_settled,
-        "ask": place_settled && past_open && gate == Gate::Ask,
-        "answered": memory.age.is_some(),
-        "adult": gate == Gate::Adult,
-    })
-}
-
-/// The level it talks at, out loud: when it changes (the bar moved, the age
-/// question answered) it says a line of the new level's own once the bar
-/// has settled, so that the player hears it took — a bar dragged across
-/// several levels hears where it stopped, once. Nothing is said for where
-/// it starts, for a new place, or for a change that came with a line of its
-/// own (a tone complaint's).
+/// The level it talks at, out loud: when it changes (the bar moved) it says
+/// a line of the new level's own once the bar has settled, so that the
+/// player hears it took — a bar dragged across several levels hears where
+/// it stopped, once. Nothing is said for where it starts, or for a change
+/// that came with a line of its own (a tone complaint's).
 struct ToneHeard {
     /// The level last said (or taken as said).
     said: String,
@@ -2591,8 +2569,8 @@ fn claude_absent(
 }
 
 /// The bar of how it talks to him moved to the level named `id` (on his
-/// phone, or asked of Claude): kept, the level it talks at follows (the
-/// age question may hold it), and so does the voice of its own lines.
+/// phone, or asked of the call or of Claude): kept, the level it talks at
+/// follows, and so does the voice of its own lines.
 fn set_tone(id: &str, learning: &ai::Learning, companion: &mut Companion, out: &mut Outputs) {
     let level = {
         let mut memory = learning.memory();
@@ -2602,11 +2580,7 @@ fn set_tone(id: &str, learning: &ai::Learning, companion: &mut Companion, out: &
         companion.settings.attitude = memory.attitude;
         memory.level()
     };
-    let line = if level.id == id {
-        format!("tone: {id}")
-    } else {
-        format!("tone: {id}, held at {} (not known to be of age)", level.id)
-    };
+    let line = format!("tone: {}", level.id);
     out.session.line("info", &line);
     out.push(Kind::Info, line);
 }
@@ -4101,24 +4075,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // corrections, what it looked up, how they like to talk (all on this PC).
     let learning = ai::Learning::load(&settings_dir);
     let (learned_tx, learned_rx) = mpsc::channel::<String>();
-    // How it talks: as asked on the command line, else as set before (the
-    // age gate holds it either way).
+    // How it talks: as asked on the command line, else as set before.
     if let Some(tone) = options.tone.clone() {
         let mut memory = learning.memory();
         memory.tone = Some(tone);
         memory.retune();
     }
-    // Where the player is (their public IP's country), for the age the wild
-    // end of the bar asks about: looked up once a start, in the background.
-    // Until it answers the place last found stands, and the phone does not
-    // ask yet (`place_settled`).
-    let (place_tx, place_rx) = mpsc::channel::<Option<ms::companion::age::Place>>();
-    let _ = std::thread::Builder::new()
-        .name("place".into())
-        .spawn(move || {
-            let _ = place_tx.send(Ages::get().locate());
-        });
-    let mut place_settled = false;
     // The level it talks at, said when it changes (not where it starts).
     let mut tone_heard = ToneHeard::new(learning.memory().level());
     // New versions: looked for in the background and staged for the next
@@ -4791,35 +4753,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             }
         }
         let now = start.elapsed().as_secs_f64();
-        // Where the player is, once looked up: the age to ask about and the
-        // level it talks at follow it (a lookup that found nothing leaves
-        // the place last found).
-        if let Ok(found) = place_rx.try_recv() {
-            place_settled = true;
-            let mut memory = learning.memory();
-            match found {
-                Some(place) => {
-                    let region = place.region.as_deref().map(|r| format!("-{r}"));
-                    out.session.line(
-                        "info",
-                        &format!("place: {}{}", place.country, region.unwrap_or_default()),
-                    );
-                    if memory.place.as_ref() != Some(&place) {
-                        memory.place = Some(place);
-                        memory.retune();
-                        memory.save();
-                    }
-                }
-                None => out.session.line(
-                    "info",
-                    "place: no lookup answered; the last place found stands",
-                ),
-            }
-            companion.settings.attitude = memory.attitude;
-            // (A new place is not announced: the phone shows its question.)
-            tone_heard.heard(memory.level());
-            memory_checked = None;
-        }
         // What the updater did; and this version, once it has run long
         // enough, is kept for good (the previous one let go).
         while let Ok(event) = update_rx.try_recv() {
@@ -5657,30 +5590,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             }
                         }
                     }
-                    // The bar moved, or the age question was answered: the
-                    // level it talks at follows (the gate may hold it).
+                    // The bar moved: the level it talks at follows.
                     Inbound::Tone(id) => {
                         set_tone(&id, &learning, &mut companion, &mut out);
                         memory_checked = None;
-                    }
-                    Inbound::Age(answer) => {
-                        let level = {
-                            let mut memory = learning.memory();
-                            memory.age = Some(answer);
-                            memory.retune();
-                            memory.save();
-                            companion.settings.attitude = memory.attitude;
-                            memory.level()
-                        };
-                        memory_checked = None;
-                        let line = format!(
-                            "age: {} {}; tone: {}",
-                            if answer.adult { "at least" } else { "under" },
-                            answer.age,
-                            level.id
-                        );
-                        out.session.line("info", &line);
-                        out.push(Kind::Info, line);
                     }
                     Inbound::Record(true) => recording.start(&mut out),
                     Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),
@@ -6608,9 +6521,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "recording": recording.status(),
                     // How it talks, and who answers.
                     "attitude": companion.settings.attitude,
-                    // The bar of how it talks, and the age question.
+                    // The bar of how it talks.
                     "tone": tone_status(&learning),
-                    "age": age_status(&learning, place_settled),
                     // The voices to pick from (ElevenLabs), and the one picked.
                     "voices": *voices.lock().unwrap_or_else(|e| e.into_inner()),
                     "voice": learning.memory().voice.clone().unwrap_or_else(|| "openai".into()),

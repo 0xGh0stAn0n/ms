@@ -182,8 +182,6 @@ pub enum Inbound {
     /// Where the player set the bar of how MapleSyrup talks to them: a
     /// level's name (`companion/spectrum.json`).
     Tone(String),
-    /// Their answer to "are you N or older?".
-    Age(crate::companion::age::Answer),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
     /// About updates: look now, install what is staged, or whether to
@@ -228,7 +226,7 @@ pub trait Service: Send + Sync {
     /// transcription}` (`transcription`: how what the player says is
     /// written down, in `language`).
     /// The phone asks for them when the level it talks at changes during a
-    /// call (the bar, the age answered, the player objecting to the tone)
+    /// call (the bar, or the player asking it to talk another way)
     /// and hands them to the call, which goes on in the new tone without
     /// starting over.
     fn instructions(&self, language: Option<&str>) -> Value;
@@ -1197,21 +1195,6 @@ impl Hub {
                     ),
                 }
             }
-            ("POST", "/api/age") => {
-                let body = body();
-                let age = body.get("age").and_then(Value::as_u64);
-                let adult = body.get("adult").and_then(Value::as_bool);
-                match (age.and_then(|a| u32::try_from(a).ok()), adult) {
-                    (Some(age), Some(adult)) => {
-                        let answer = crate::companion::age::Answer { age, adult };
-                        let mut state = self.lock();
-                        state.inbox.retain(|i| !matches!(i, Inbound::Age(_)));
-                        state.inbox.push(Inbound::Age(answer));
-                        Response::json(200, &json!({"ok": true}))
-                    }
-                    _ => Response::json(400, &json!({"error": "bad_request"})),
-                }
-            }
             ("POST", "/api/speaker") => match text_field("id").filter(|id| {
                 !id.is_empty()
                     && id.len() <= 64
@@ -1726,7 +1709,6 @@ mod tests {
             ("/api/workshop?k=k1", r#"{"action": "undo"}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/tone?k=k1", r#"{"tone": " Savage "}"#),
-            ("/api/age?k=k1", r#"{"age": 18, "adult": true}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
         ] {
             assert_eq!(
@@ -1776,10 +1758,6 @@ mod tests {
                         .id
                         .clone()
                 ),
-                Inbound::Age(crate::companion::age::Answer {
-                    age: 18,
-                    adult: true
-                }),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
             ]
         );
@@ -1793,17 +1771,6 @@ mod tests {
                 .status,
             400
         );
-        for bad in [
-            r#"{"age": 18}"#,
-            r#"{"age": -1, "adult": true}"#,
-            r#"{"adult": true}"#,
-        ] {
-            assert_eq!(
-                hub.handle(&request("POST", "/api/age?k=k1", bad)).status,
-                400,
-                "{bad}"
-            );
-        }
         assert_eq!(
             hub.handle(&request("POST", "/api/update?k=k1", r#"{"action": "fly"}"#))
                 .status,

@@ -732,7 +732,7 @@ impl Brain {
     }
 
     /// The level of the bar it talks at now (the player sets the bar on the
-    /// phone; the age gate may hold it).
+    /// phone).
     pub fn level(&self) -> &'static Level {
         level_of(self.learning.as_ref(), self.attitude)
     }
@@ -4698,8 +4698,8 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
         ("Sure thing, boss.", "Sure thing, boss."),
         ("Of course, genius. Pot.", "Of course, genius. Pot."),
         (
-            "Good question, dumbass. It's Henesys.",
-            "Good question, dumbass. It's Henesys.",
+            "Good question, rookie. It's Henesys.",
+            "Good question, rookie. It's Henesys.",
         ),
         ("Of course, you idiot.", "Of course, you idiot."),
         ("Certainly, captain obvious.", "Certainly, captain obvious."),

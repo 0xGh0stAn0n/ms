@@ -11,7 +11,6 @@
 //! whether the player is still there when the game has sat idle for twenty
 //! minutes without a word from them. Everything else waits to be asked.
 
-pub mod age;
 pub mod attitude;
 pub mod chat;
 pub mod commands;
@@ -1209,10 +1208,10 @@ pub mod lines {
             "Move! You're melting, genius. {} and dropping.",
             "Back off, idiot, you're getting shredded.",
             "Are you tanking that on purpose? Pot, clown.",
-            "Stop face-tanking everything and hit the damn potion.",
+            "Stop face-tanking everything and hit a potion. Pride won't heal you.",
             "Your HP bar's doing a speedrun. Get out.",
             "Dodging's free, you know. Try it.",
-            "Wow, you just stood there and took that. Move, dumbass.",
+            "Wow, you just stood there and took that. Move, you walking punching bag.",
         ],
     ];
 
@@ -1240,10 +1239,10 @@ pub mod lines {
             "זוז! אתה נמס, גאון. {} ויורד.",
             "תתרחק, אידיוט, קורעים אותך.",
             "אתה סופג את זה בכוונה? תשתה, ליצן.",
-            "תפסיק לספוג הכול בפרצוף ותלחץ על השיקוי המחורבן.",
+            "תפסיק לספוג הכול בפרצוף ותלחץ על שיקוי. גאווה לא מרפאת.",
             "בר החיים שלך עושה ספידראן. תצא משם.",
             "להתחמק לא עולה כסף, אתה יודע. תנסה.",
-            "וואו, פשוט עמדת שם וספגת את זה. זוז, אהבל.",
+            "וואו, פשוט עמדת שם וספגת את זה. זוז, שק חבטות מהלך.",
         ],
     ];
 
@@ -1276,7 +1275,7 @@ pub mod lines {
             "Pot NOW, you're at {}, genius.",
             "{} HP. Are you trying to die?",
             "Your HP's at {} and you're attacking. Bold. Stupid, but bold.",
-            "Is {} a flex? Drink the damn potion.",
+            "Is {} a flex? Drink a potion, show-off.",
             "{} HP. Your gravestone's loading.",
             "Red bar, {}, no potion. Incredible. Pot.",
         ],
@@ -1306,7 +1305,7 @@ pub mod lines {
             "תשתה עכשיו, אתה על {}, גאון.",
             "{} חיים. אתה מנסה למות?",
             "יש לך {} חיים ואתה תוקף. אמיץ. מטומטם, אבל אמיץ.",
-            "{} חיים, מה, אתה עושה פוזות? תשתה את השיקוי המחורבן.",
+            "{} חיים, מה, אתה עושה פוזות? תשתה שיקוי, שוויצר.",
             "{} חיים. המצבה שלך בטעינה.",
             "בר אדום, {}, בלי שיקוי. מדהים. תשתה.",
         ],
@@ -7803,7 +7802,7 @@ mod tests {
     }
 
     #[test]
-    fn every_deck_has_six_ways_to_say_it_and_savage_roasts_the_play_only() {
+    fn every_deck_has_six_ways_to_say_it_none_swears_and_savage_roasts_the_play_only() {
         // Never said in any voice, in either language: these are about
         // who they are, not how they play (and the last ones are not a
         // joke).
@@ -7829,6 +7828,41 @@ mod tests {
             "נכה",
             "תתאבד",
             "לך תמות",
+        ];
+        // No voice swears, in either language: the wildest roasts in clean
+        // words. (Whole words: "hello" is not "hell".)
+        const SWEARING: &[&str] = &[
+            "damn",
+            "dammit",
+            "goddamn",
+            "hell",
+            "shit",
+            "shitty",
+            "bullshit",
+            "fuck",
+            "fucking",
+            "fucker",
+            "ass",
+            "asshole",
+            "dumbass",
+            "jackass",
+            "crap",
+            "crappy",
+            "bitch",
+            "bastard",
+            "piss",
+            "pissed",
+            "wtf",
+            "מחורבן",
+            "מחורבנת",
+            "חרא",
+            "זין",
+            "לעזאזל",
+            "מזדיין",
+            "תזדיין",
+            "שיט",
+            "פאק",
+            "בולשיט",
         ];
         for (name, en, he) in lines::ALL {
             // (A deck dealt a few times a night at most has three.)
@@ -7860,6 +7894,10 @@ mod tests {
                     );
                     assert!(
                         BLOCKLIST.iter().all(|word| !lower.contains(word)),
+                        "{name}: {line:?}"
+                    );
+                    assert!(
+                        SWEARING.iter().all(|word| !says_he(&lower, word)),
                         "{name}: {line:?}"
                     );
                     // A line or two, as said on voice chat.

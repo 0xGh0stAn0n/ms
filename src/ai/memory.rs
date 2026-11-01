@@ -30,7 +30,6 @@ use serde_json::{Value, json};
 
 use super::knowledge::{self, Entry, Knowledge, Source, id_of};
 use super::openai::{Ask, OpenAi};
-use crate::companion::age::{self, Ages, Answer, Gate, Place};
 use crate::companion::spectrum::{Level, Spectrum};
 
 pub const FILE: &str = "memory.json";
@@ -223,11 +222,6 @@ pub struct Memory {
     /// in `companion/spectrum.json` (a notebook from before the bar gets
     /// the attitude it kept).
     pub tone: Option<String>,
-    /// Their answer when asked whether they are of age where they are.
-    pub age: Option<Answer>,
-    /// Where they were last found to be (their public IP's country), for
-    /// the age to ask about while it can't be looked up.
-    pub place: Option<Place>,
     /// The voice it speaks in (an ElevenLabs voice's id; `None` or
     /// "openai": OpenAI's).
     pub voice: Option<String>,
@@ -277,25 +271,13 @@ impl Memory {
             .unwrap_or_else(|| spectrum.default_index())
     }
 
-    /// The age of an adult where the player was last found.
-    pub fn age_required(&self) -> u32 {
-        Ages::get().at(self.place.as_ref())
-    }
-
-    /// Whether the player is of age there, as they answered.
-    pub fn gate(&self) -> Gate {
-        age::gate(self.age, self.age_required())
-    }
-
-    /// The level it talks at: where the bar is set, held at the last level
-    /// open to all while the player is not known to be of age.
+    /// The level it talks at: where the bar is set.
     pub fn level(&self) -> &'static Level {
-        let spectrum = Spectrum::get();
-        spectrum.level(spectrum.held(self.tone_set(), self.gate() == Gate::Adult))
+        Spectrum::get().level(self.tone_set())
     }
 
-    /// Keep `attitude` the voice of the level it talks at, after the bar,
-    /// the answer or the place changed.
+    /// Keep `attitude` the voice of the level it talks at, after the bar
+    /// moved.
     pub fn retune(&mut self) {
         self.attitude = self.level().voice;
     }
@@ -1368,52 +1350,44 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_is_held_at_the_last_level_open_to_all_until_they_say_they_are_of_age() {
+    fn it_talks_where_the_bar_is_set_for_everyone() {
         use crate::companion::Attitude;
         let spectrum = Spectrum::get();
         let wildest = spectrum.levels().len() - 1;
-        let open = spectrum.open();
-        // A notebook from before the bar, savage then: the bar is where it
-        // was, and it talks at the last level open to all until the player
-        // says they are of age where they are (here, as last found).
+        // A notebook from before the bar, savage then, and from the age
+        // question's days (an answer and a place it no longer reads): the
+        // bar is where its attitude was, and it talks there.
         let dir = temp("tone");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join(FILE),
-            r#"{"attitude": "savage", "place": {"country": "IL"}}"#,
+            r#"{"attitude": "savage", "age": {"age": 18, "adult": false}, "place": {"country": "IL"}}"#,
         )
         .unwrap();
         let mut memory = Memory::load(&dir);
         let savage = spectrum.of_voice(Attitude::Savage);
         assert_eq!(memory.tone.as_deref(), Some(savage.id.as_str()));
-        assert_eq!(memory.gate(), Gate::Ask);
-        assert_eq!(memory.level().id, spectrum.level(open).id);
-        // `retune` at the load: the voice its lines and older versions use.
-        assert_eq!(memory.attitude, spectrum.level(open).voice);
-        // Of age there: the level the bar is at, its voice.
-        let age = memory.age_required();
-        memory.age = Some(Answer { age, adult: true });
-        memory.retune();
         assert_eq!(memory.level().id, savage.id);
+        // `retune` at the load: the voice its lines and older versions use.
         assert_eq!(memory.attitude, Attitude::Savage);
-        // Under it: held, wherever the bar goes.
-        memory.age = Some(Answer { age, adult: false });
+        // The wildest end, for anyone who sets it.
         memory.tone = Some(spectrum.level(wildest).id.clone());
         memory.retune();
-        assert_eq!(memory.gate(), Gate::Minor);
-        assert_eq!(memory.level().id, spectrum.level(open).id);
-        // Kept as set, read back as set.
+        assert_eq!(memory.level().id, spectrum.level(wildest).id);
+        // Kept as set, read back as set (without what it no longer reads).
         memory.save();
+        let saved = std::fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(!saved.contains("\"place\""), "{saved}");
         let again = Memory::load(&dir);
         assert_eq!(again.tone, memory.tone);
-        assert_eq!(again.age, memory.age);
-        assert_eq!(again.place, memory.place);
         assert_eq!(again.level().id, memory.level().id);
-        // A new notebook: the bar where it starts, held until asked.
+        // A new notebook: the bar where it starts.
         let fresh = Memory::load(&temp("tone-fresh"));
         assert_eq!(fresh.tone_set(), spectrum.default_index());
-        assert_eq!(fresh.gate(), Gate::Ask);
-        assert!(!fresh.level().adults_only);
+        assert_eq!(
+            fresh.level().id,
+            spectrum.level(spectrum.default_index()).id
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -61,8 +61,7 @@ pub enum Effect {
     /// Change MapleSyrup's own program on this PC, as the player asked.
     Rewrite(String),
     /// Move the bar of how it talks to the player to the level with this
-    /// id, as they asked (the phone's bar follows; the age question may
-    /// hold it).
+    /// id, as they asked (the phone's bar follows).
     Tone(String),
     /// Speak this language with the player from now on (one of the phone's
     /// [`super::language::LOCALES`]), as they asked: theirs, as if picked
@@ -219,8 +218,7 @@ character (always on screen), and never with an alert about something else (leve
                 "set_tone",
                 "Move the bar of how you talk to the player — the one on their phone, gentlest first — to another \
 level, when they ask you to talk to them another way, in any words and any language (to swear or not, to be gentler, \
-to roast them, no filter). A player not known to be of age where they are stays at the last level open to all (the \
-phone asks them).",
+to roast them, no filter). No level swears.",
                 json!({"tone": {"type": "string", "enum": crate::companion::spectrum::Spectrum::get().ids(),
                                 "description": "The level, gentlest first."}}),
             ),
@@ -534,10 +532,7 @@ and installs the next time MapleSyrup starts. Tell the player it takes a few min
                     .contains(&tone.as_str())
                 {
                     (
-                        format!(
-                            "The bar is moving to {tone}: talk that way from your next words (unless the \
-phone holds a player not known to be of age at the last level open to all)."
-                        ),
+                        format!("The bar is moving to {tone}: talk that way from your next words."),
                         Some(Effect::Tone(tone)),
                     )
                 } else {

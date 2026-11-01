@@ -132,20 +132,16 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     the friendly voice's own level (`commands::tone_complaint`).
   - **The bar** (`companion::spectrum`, `spectrum.json`): how it talks, from
     a level for young children to the wildest. Each level names the deck
-    voice its own lines use (an `Attitude`), whether it is for adults only,
-    and its instructions for the models (`style::rules`). Where the player
-    set it is `Memory::tone`; it talks at `Memory::level` — held at the
-    last level open to all while the age gate does not know them to be of
-    age (`companion::age`, `age.json`: the age of majority by country and
-    region, never under 18, each with the law it comes from and where it
-    was read (a test holds every entry to it); the country from their
-    public IP, the first lookup that answers). `Memory::retune` keeps `attitude` the level's
-    voice. The phone posts `/api/tone` and `/api/age`, and reads `tone` and
-    `age` off the status: the question is asked once the bar is set past
-    the levels open to all (savage and unhinged; blunt's mild swearing is
-    open, like the game's own teen rating). The bar is on the main screen,
-    right under Start listening. When the level it talks at changes (not
-    at start, not for a new place), `ToneHeard` waits for it to settle and
+    voice its own lines use (an `Attitude`) and its instructions for the
+    models (`style::rules`). No level swears — the wild end roasts in clean
+    words (the PM, 1 Nov 2026: no age rules to get into, nothing to answer
+    for with children) — so the whole bar is open to everyone; a test holds
+    every level to "no swearing". Where the player set it is
+    `Memory::tone`, and it talks at `Memory::level`, the same.
+    `Memory::retune` keeps `attitude` the level's voice. The phone posts
+    `/api/tone` and reads `tone` off the status. The bar is on the main
+    screen, right under Start listening. When the level it talks at changes (not
+    at start), `ToneHeard` waits for it to settle and
     says the level's own `said_when_set` line; while Claude talks, Claude
     gets a `tone` event instead and says one itself. Claude has the
     level's rules (`claude::tone`) with every `heard` and `phone` event

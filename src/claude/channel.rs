@@ -760,8 +760,7 @@ impl<A: Api + 'static> Bridge<A> {
                 }
                 match self.api.tone(&tone) {
                     Ok(tone) => said(&format!(
-                        "The bar is at {tone} now. A player not known to be of age is held at the last \
-level open to all; a `tone` event brings the rules of the level you talk at."
+                        "The bar is at {tone} now. A `tone` event brings the rules of the level you talk at."
                     )),
                     Err(why) => failed(&format!("Not moved: {why}.")),
                 }
@@ -957,9 +956,8 @@ fn tools(channel: bool) -> Value {
             "name": "set_tone",
             "title": "How it talks to him",
             "description": "Move the bar of how you and MapleSyrup talk to him — the one on his phone, gentlest \
-        first — to another level, when he asks you to talk to him another way, in any words (to swear or not, to be \
-        gentler, to roast him, no filter). A player not known to be of age where he is stays at the last level open to \
-        all (the phone asks him); a `tone` event then brings the rules of the level you talk at.",
+        first — to another level, when he asks you to talk to him another way, in any words (gentler, ruder, to \
+        roast him, no filter; no level swears); a `tone` event then brings the rules of the level you talk at.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"tone": {

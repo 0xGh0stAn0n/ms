@@ -41,9 +41,9 @@ pub mod link;
 use crate::companion::spectrum::Level;
 
 /// What comes before the rules of the level Claude is to talk at.
-pub const TONE: &str = "How you talk to him now: the bar of how you talk to him on his phone, which he sets (its \
-wild end only once he said he is an adult where he is), is at this level. Talk to him this way, out loud and when \
-you write to him, until it changes. It is his choice: don't soften it, apologise for it or ask whether he is sure.";
+pub const TONE: &str = "How you talk to him now: the bar of how you talk to him on his phone, which he sets, is at \
+this level. Talk to him this way, out loud and when you write to him, until it changes. It is his choice: don't \
+soften it, apologise for it or ask whether he is sure.";
 
 /// What a `tone` event asks of Claude besides the new rules.
 pub const TONE_MOVED: &str = "Say one short line in the new tone now, so he hears it took.";
