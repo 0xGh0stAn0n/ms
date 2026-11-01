@@ -2299,6 +2299,78 @@ impl ToneHeard {
     }
 }
 
+/// Speaks in voice `id` from now on (an ElevenLabs voice's id, or
+/// "openai"): kept for next time, logged, and heard at once — `hello`, said
+/// in it (translated for the player, like its other lines).
+fn use_voice(
+    id: &str,
+    hello: &str,
+    learning: &ai::Learning,
+    out: &mut Outputs,
+    companion: &Companion,
+) {
+    {
+        let mut memory = learning.memory();
+        memory.voice = Some(id.to_string());
+        memory.save();
+    }
+    out.session.line("info", &format!("voice: {id}"));
+    if let Some(worker) = &out.mouth.ai
+        && !companion.muted()
+        && !hello.trim().is_empty()
+    {
+        worker.send(Job::Speak {
+            text: hello.to_string(),
+            language: out.language.clone(),
+            kind: Kind::Info,
+            show: false,
+            speak: true,
+        });
+    }
+}
+
+/// Does what a pick on the phone, or a character's voice made, comes to
+/// ([`ai::cast::Casting`]): speaks in a voice, or starts making one (with
+/// no account to make it on, or a thread that won't start, it goes back as
+/// not made, which lets the next one go).
+fn cast_steps(
+    steps: Vec<ai::cast::Step>,
+    casting: &mut ai::cast::Casting,
+    cast: &ai::cast::Cast,
+    maker: Option<&ai::cast::Maker>,
+    learning: &ai::Learning,
+    out: &mut Outputs,
+    companion: &Companion,
+) {
+    use ai::cast::Step;
+    let mut steps = std::collections::VecDeque::from(steps);
+    while let Some(step) = steps.pop_front() {
+        match step {
+            Step::Speak { voice, hello } => use_voice(&voice, &hello, learning, out, companion),
+            Step::Make(character) => {
+                let name = cast.name_of(&character).to_string();
+                let id = character.id.clone();
+                let started = match maker {
+                    Some(maker) => maker.start(character).map_err(|e| e.to_string()),
+                    None => Err("no ElevenLabs key".into()),
+                };
+                match started {
+                    Ok(()) => out
+                        .session
+                        .line("info", &format!("ElevenLabs: making {name}'s voice")),
+                    Err(why) => {
+                        out.session.line(
+                            "info",
+                            &format!("ElevenLabs: couldn't start making {name}'s voice ({why})"),
+                        );
+                        steps.extend(casting.made(cast, &id, None));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// The player asked not to be spoken to that way: the bar goes down to the
 /// friendly voice's own level (no swearing) if it was past it, for good
 /// (until they move it on the phone), and they are told so in one line.
@@ -4144,13 +4216,31 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let eleven_base =
         std::env::var("ELEVENLABS_BASE_URL").unwrap_or_else(|_| ai::eleven::BASE.to_string());
     let voices: Arc<Mutex<Vec<ai::eleven::Voice>>> = Arc::new(Mutex::new(Vec::new()));
+    // Whether the account's voices are listed yet (until then a character's
+    // voice can't be told apart from one still to make).
+    let voices_listed = Arc::new(AtomicBool::new(false));
     // What it found (for the log and the phone).
     let (voices_tx, voices_rx) = mpsc::channel::<String>();
+    // The characters of MapleSyrup's story, offered on the phone with the
+    // account's voices: a character's voice is made on the account the
+    // first time it is picked (one at a time), and found there from then on.
+    let cast = Arc::new(ai::cast::Cast::built_in().unwrap_or_else(|why| {
+        let _ = voices_tx.send(format!("the cast didn't load: {why}"));
+        ai::cast::Cast::default()
+    }));
+    // What the player picked, and the voice being made (one at a time);
+    // the voices made, as they are.
+    let mut casting = ai::cast::Casting::default();
+    let (made_tx, made_rx) = mpsc::channel::<ai::cast::Made>();
+    let maker = elevenlabs_key
+        .as_deref()
+        .map(|key| ai::cast::Maker::new(key, &eleven_base, Arc::clone(&cast), made_tx));
     if let Some(key) = &elevenlabs_key {
-        let (key, base, voices, learning) = (
+        let (key, base, voices, voices_listed, learning) = (
             key.clone(),
             eleven_base.clone(),
             Arc::clone(&voices),
+            Arc::clone(&voices_listed),
             learning.clone(),
         );
         let _ = std::thread::Builder::new()
@@ -4190,6 +4280,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     list.len()
                 ));
                 *voices.lock().unwrap_or_else(|e| e.into_inner()) = list;
+                voices_listed.store(true, Ordering::Release);
             });
     }
 
@@ -5576,25 +5667,39 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 .iter()
                                 .any(|v| v.id == id);
                         if known {
-                            {
-                                let mut memory = learning.memory();
-                                memory.voice = Some(id.clone());
-                                memory.save();
-                            }
-                            out.session.line("info", &format!("voice: {id}"));
-                            // A word in the new voice.
-                            if let Some(worker) = &out.mouth.ai
-                                && !companion.muted()
-                            {
-                                worker.send(Job::Speak {
-                                    text: "This is my voice now.".into(),
-                                    language: out.language.clone(),
-                                    kind: Kind::Info,
-                                    show: false,
-                                    speak: true,
-                                });
-                            }
+                            let steps = casting.voice(&cast, &id);
+                            cast_steps(
+                                steps,
+                                &mut casting,
+                                &cast,
+                                maker.as_ref(),
+                                &learning,
+                                &mut out,
+                                &companion,
+                            );
                         }
+                    }
+                    // A character of the story: in its voice on the account,
+                    // or that voice made there first (the phone shows it
+                    // being made until it is in the list). The account's
+                    // voices count once they are listed (until then a
+                    // character's voice can't be told from one to make).
+                    Inbound::Cast(id) => {
+                        out.session.line("info", &format!("voice: picked {id}"));
+                        let listed = maker.is_some() && voices_listed.load(Ordering::Acquire);
+                        let steps = {
+                            let voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+                            casting.character(&cast, &id, listed.then_some(voices.as_slice()))
+                        };
+                        cast_steps(
+                            steps,
+                            &mut casting,
+                            &cast,
+                            maker.as_ref(),
+                            &learning,
+                            &mut out,
+                            &companion,
+                        );
                     }
                     // The bar moved: the level it talks at follows.
                     Inbound::Tone(id) => {
@@ -6386,6 +6491,40 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             out.session.line("info", &line);
             out.push(Kind::Info, line);
         }
+        // A character's voice made on the account (it joins the list, and
+        // speaks if it is still the player's pick), or why it couldn't be.
+        while let Ok(made) = made_rx.try_recv() {
+            let name = cast.name_of(&made.character).to_string();
+            let voice = match made.voice {
+                Ok(voice) => {
+                    out.session.line(
+                        "info",
+                        &format!("ElevenLabs: {name}'s voice is ready ({})", voice.id),
+                    );
+                    let mut list = voices.lock().unwrap_or_else(|e| e.into_inner());
+                    list.retain(|v| v.id != voice.id);
+                    list.push(voice.clone());
+                    list.sort_by_key(|v| v.name.to_lowercase());
+                    Some(voice)
+                }
+                Err(why) => {
+                    let line = format!("ElevenLabs: couldn't make {name}'s voice ({why})");
+                    out.session.line("info", &line);
+                    out.push(Kind::Info, line);
+                    None
+                }
+            };
+            let steps = casting.made(&cast, &made.character.id, voice.as_ref());
+            cast_steps(
+                steps,
+                &mut casting,
+                &cast,
+                maker.as_ref(),
+                &learning,
+                &mut out,
+                &companion,
+            );
+        }
         while let Ok(line) = learned_rx.try_recv() {
             memory_checked = None;
             if line.starts_with("learned from") || line.starts_with("adapted") {
@@ -6496,6 +6635,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     memory_checked = Some(Instant::now());
                     memory_status = learning.status();
                 }
+                // The story's characters, once the account's voices are
+                // listed (each with its voice there, if it has one yet).
+                let cast_status =
+                    (maker.is_some() && voices_listed.load(Ordering::Acquire)).then(|| {
+                        let voices = voices.lock().unwrap_or_else(|e| e.into_inner());
+                        cast.status(&voices, &casting.under_way())
+                    });
                 let obs = companion.last();
                 let mut status = json!({
                     "game": obs.map(|o| o.game.clone()).unwrap_or(GameView::NotFound),
@@ -6531,6 +6677,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "tone": tone_status(&learning),
                     // The voices to pick from (ElevenLabs), and the one picked.
                     "voices": *voices.lock().unwrap_or_else(|e| e.into_inner()),
+                    "cast": cast_status,
                     "voice": learning.memory().voice.clone().unwrap_or_else(|| "openai".into()),
                     // How long the phone waits after the words stop (it adapts).
                     "settle_ms": learning.memory().adapt.settle_ms,

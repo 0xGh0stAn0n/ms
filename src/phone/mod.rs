@@ -184,6 +184,9 @@ pub enum Inbound {
     Tone(String),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
+    /// Speak as this character of the story (its id in the cast): in its
+    /// voice on the account, made there first if it has none yet.
+    Cast(String),
     /// About updates: look now, install what is staged, or whether to
     /// update on its own.
     Update(UpdateAsk),
@@ -1195,21 +1198,27 @@ impl Hub {
                     ),
                 }
             }
-            ("POST", "/api/speaker") => match text_field("id").filter(|id| {
-                !id.is_empty()
-                    && id.len() <= 64
-                    && id
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            }) {
-                Some(id) => {
-                    let mut state = self.lock();
-                    state.inbox.retain(|i| !matches!(i, Inbound::Speaker(_)));
-                    state.inbox.push(Inbound::Speaker(id));
-                    Response::json(200, &json!({"ok": true}))
+            // A voice (`id`), or a character of the story (`cast`); the
+            // latest pick replaces one not yet taken.
+            ("POST", "/api/speaker") => {
+                let plain = |id: &str| crate::util::plain_id(id);
+                let pick = match (text_field("id"), text_field("cast")) {
+                    (Some(id), None) if plain(&id) => Some(Inbound::Speaker(id)),
+                    (None, Some(character)) if plain(&character) => Some(Inbound::Cast(character)),
+                    _ => None,
+                };
+                match pick {
+                    Some(pick) => {
+                        let mut state = self.lock();
+                        state
+                            .inbox
+                            .retain(|i| !matches!(i, Inbound::Speaker(_) | Inbound::Cast(_)));
+                        state.inbox.push(pick);
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    None => Response::json(400, &json!({"error": "which voice?"})),
                 }
-                None => Response::json(400, &json!({"error": "which voice?"})),
-            },
+            }
             // When a clip began to play, a turn of the live call: for the
             // timing, while it is on.
             ("POST", latency::PHONE_PATH) if latency::TRACER.enabled() => {
@@ -1785,6 +1794,30 @@ mod tests {
             .status,
             400
         );
+    }
+
+    #[test]
+    fn a_character_picked_on_the_phone_replaces_a_voice_not_yet_taken() {
+        let hub = Hub::new("k1".into(), None, VoiceOn::Phone);
+        let pick = |body: &str| {
+            hub.handle(&request("POST", "/api/speaker?k=k1", body))
+                .status
+        };
+        assert_eq!(pick(r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#), 200);
+        assert_eq!(pick(r#"{"cast": "nana-ping"}"#), 200);
+        // A character's id is checked like a voice's; one of the two, not
+        // both (nor a bad one beside a good one).
+        assert_eq!(pick(r#"{"cast": "../x"}"#), 400);
+        assert_eq!(pick(r#"{"cast": "syrup", "id": "../x"}"#), 400);
+        assert_eq!(
+            pick(r#"{"cast": "syrup", "id": "pNInz6obpgDQGcFmaJgB"}"#),
+            400
+        );
+        assert_eq!(pick("{}"), 400);
+        assert_eq!(hub.take_inbox(), vec![Inbound::Cast("nana-ping".into())]);
+        assert_eq!(pick(r#"{"cast": "syrup"}"#), 200);
+        assert_eq!(pick(r#"{"id": "openai"}"#), 200);
+        assert_eq!(hub.take_inbox(), vec![Inbound::Speaker("openai".into())]);
     }
 
     fn request(method: &str, target: &str, body: &str) -> Request {

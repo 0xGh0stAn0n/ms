@@ -1,0 +1,138 @@
+{
+  "language": "en",
+  "label": "maplesyrup_cast",
+  "voice_name": "{name} (MapleSyrup)",
+  "design_models": [
+    "eleven_ttv_v3",
+    "eleven_multilingual_ttv_v2"
+  ],
+  "hello": "This is my voice now.",
+  "characters": [
+    {
+      "id": "syrup",
+      "name": {
+        "en": "Syrup",
+        "he": "סירופ"
+      },
+      "about": {
+        "en": "Sees everything, says the numbers as they are",
+        "he": "רואה הכל ואומר את המספרים כמו שהם"
+      },
+      "description": "A talking fluffy dog from a storybook: a middle-aged male voice, soft and a little gravelly, calm and precise, with a dry sense of humour. Slightly fussy about details, warm underneath. Measured, unhurried pace, clear neutral accent. Studio-quality recording.",
+      "sample": "Four thousand eight hundred and twelve. Not a lot of snails, One. Four thousand eight hundred and twelve. Your HP is three hundred and forty, not almost dead. The boss has eleven percent left, not basically nothing. I see everything on that screen, and I will always tell you the numbers exactly as they are. My eyes, your hands. Now drink a potion.",
+      "hello": "Syrup here. I see the whole screen, and I'll tell you the numbers exactly as they are."
+    },
+    {
+      "id": "one",
+      "name": {
+        "en": "One",
+        "he": "וואן"
+      },
+      "about": {
+        "en": "The hero. Brave by day, terrified by night",
+        "he": "הגיבור. אמיץ ביום, מבועת בלילה"
+      },
+      "description": "A young man in his mid-twenties with a quick, bright voice, a little hoarse from too little sleep. Warm and funny, brave but with a nervous edge, slightly breathless when excited. Natural conversational pace, neutral accent. Studio-quality recording.",
+      "sample": "Okay. Okay, okay, I can do this. It's just a snail. A very big snail, with a crown, who knows my name. You know what? I've beaten four thousand eight hundred and twelve of his cousins. I can handle one king. Syrup, how much HP do I have? No, don't tell me. I'm going in. If I'm not back in a minute, tell Two he was right for once.",
+      "hello": "Hey, it's One. I haven't slept properly since I was seven, so let's play."
+    },
+    {
+      "id": "isadora",
+      "name": {
+        "en": "Isadora the Red",
+        "he": "איזדורה האדומה"
+      },
+      "about": {
+        "en": "One's teacher. Sharp, funny, never gives up on you",
+        "he": "המורה של וואן. חדה, מצחיקה, לא מוותרת עליך"
+      },
+      "description": "A confident woman in her mid-forties with a warm, rich alto and a hint of amusement in every line. Sharp, witty and kind, but no-nonsense; she slows down and lowers her voice when she is serious. Clear, slightly theatrical delivery, neutral accent. Studio-quality recording.",
+      "sample": "You don't defeat a nightmare, One. You meet it. Sit down. No, not on the potion barrel, Nana Ping is still in it. Listen to me. Every monster you beat out there, you will meet again in here. So stop running, stop counting, and breathe. And for the hundredth time, no, I will not marry you. Now cast it again. Slower.",
+      "hello": "Isadora. I'll be watching every move, so make them good ones."
+    },
+    {
+      "id": "gideon",
+      "name": {
+        "en": "Gideon",
+        "he": "גדעון"
+      },
+      "about": {
+        "en": "The loudest assassin alive. Big laugh",
+        "he": "המתנקש הכי רועש בעולם. צחוק גדול"
+      },
+      "description": "A big, jolly man around fifty with a booming, cheerful voice and a huge, warm laugh. Loud and enthusiastic, always cheering someone on, never whispers. Energetic pace, friendly neutral accent. Studio-quality recording.",
+      "sample": "Surprise! Ha! Did I startle you? I always announce myself, it's only polite. Now, about your proposal. The ring? Beautiful. The speech? Very moving. But the knee, my friend, the knee! You went down like a sack of potatoes. Again, from the top, and this time look her in the eyes. She's my wife, I should know what she likes!",
+      "hello": "Surprise! It's Gideon! Don't worry, I'll be very sneaky. Ha!"
+    },
+    {
+      "id": "nana-ping",
+      "name": {
+        "en": "Nana Ping",
+        "he": "נאנה פינג"
+      },
+      "about": {
+        "en": "The oldest magician. Casts every spell a second early",
+        "he": "הקוסמת הכי זקנה. מטילה כל כישוף שנייה מוקדם"
+      },
+      "description": "A very old woman with a dry, crackly, unhurried voice and perfect comic timing. Wise, mischievous and a little deadpan; she pauses before the punchline. Gentle, slow delivery, neutral accent. Studio-quality recording.",
+      "sample": "Sit, sit. Into the barrel. Yes, the barrel. Mind the toad. Now. My spells always arrive one second late, child, so for sixty years I have cast them one second early. And you? You are afraid of things that have not happened yet. That's all fear is, you know. A spell that arrives before its time. That will be three coins. Or a biscuit.",
+      "hello": "Nana Ping. I knew you'd pick me. I knew it a second early."
+    },
+    {
+      "id": "two",
+      "name": {
+        "en": "Two",
+        "he": "טו"
+      },
+      "about": {
+        "en": "Always exactly one minute late",
+        "he": "תמיד מאחר בדקה בדיוק"
+      },
+      "description": "A young man in his early twenties, dramatic and smug, always a little out of breath as if he just arrived running. Theatrical and cocky, then suddenly deflated. Fast pace, neutral accent. Studio-quality recording.",
+      "sample": "Stand back, everyone, I'll handle this! Oh. It's over? Again? By how much? A minute. Of course. One minute. It's always one minute! Fine. Next time I'll leave a minute early and then we'll see. Born one minute after him, and I've been sixty seconds behind my whole life. Hey! Wait for me!",
+      "hello": "Two, reporting for duty! Did I miss anything? I missed something, didn't I."
+    },
+    {
+      "id": "sergeant-respawn",
+      "name": {
+        "en": "Sergeant Respawn",
+        "he": "סמל ריספאון"
+      },
+      "about": {
+        "en": "Waits for you after every death",
+        "he": "מחכה לך אחרי כל מוות"
+      },
+      "description": "A gruff drill sergeant in his fifties with a gravelly, booming voice. Barks short commands of three or four words; stern, but secretly caring. Loud, clipped, rhythmic delivery, neutral accent. Studio-quality recording.",
+      "sample": "On your feet! Death number ninety seven! You ran left. Why did you run left? The boss was on the left! Look at me. You died. You came back. That is the job. Potions full. Shoes tied. Head up. Now get back out there, and this time, run right!",
+      "hello": "Sergeant Respawn! Eyes up! Potions ready! Let's move!"
+    },
+    {
+      "id": "decibel",
+      "name": {
+        "en": "Decibel",
+        "he": "דציבל"
+      },
+      "about": {
+        "en": "Calls every moment like a world final",
+        "he": "מתאר כל רגע כמו גמר עולמי"
+      },
+      "description": "An over-the-top sports commentator, a man in his thirties: fast, bright and excited, every moment sounds like the world final. Huge energy, rising pitch on the big moments, crisp diction, neutral accent. Studio-quality recording.",
+      "sample": "Ladies and gentlemen, what a night here in the forest! He dodges! He jumps! He casts! Oh, he's taking the potion, smart, very smart! The boss is down to its final sliver, the crowd is on its feet, I can't breathe, I can't believe it, he's done it! Absolutely unbelievable! Somebody get me a glass of water!",
+      "hello": "Ladies and gentlemen, Decibel is on the mic, and this is going to be legendary!"
+    },
+    {
+      "id": "auntie-mildew",
+      "name": {
+        "en": "Auntie Mildew",
+        "he": "דודה עובש"
+      },
+      "about": {
+        "en": "Sixty meters of sticky affection",
+        "he": "שישים מטר של חיבה דביקה"
+      },
+      "description": "A huge, creepy-sweet monster voice: a middle-aged woman's voice that is wet, sticky and syrupy, overly affectionate, slow and gooey, with a faint bubbling quality. Unsettling but funny, like a smothering aunt. Neutral accent. Studio-quality recording.",
+      "sample": "There you are, sweetie. Oh, look at you, all grown up and still running from Auntie. Come here, come closer, let Auntie give you a nice, big, sticky hug. Don't be like that. I have been waiting so long. So many years. Mmm. You smell like fear and potions. My favourite. Come to Auntie, darling.",
+      "hello": "Hello, sweetie. Auntie's here now. She's not going anywhere."
+    }
+  ]
+}
