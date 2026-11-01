@@ -143,6 +143,11 @@ pub enum Want {
     Verify,
 }
 
+/// Frames in a row of a shape the layout does not fit before the HUD is
+/// looked for on it: one frame of another shape (a resize under way, a
+/// capture lagging one, a switch to fullscreen) would otherwise overwrite
+/// the learned layout, and lose its bars' readings.
+const SHAPE_HOLDS: u32 = 5;
 /// How long the pixels alone get to find the HUD before the model is asked.
 const FIND_FOR: Duration = Duration::from_secs(10);
 /// How often the pixels are asked to find the HUD while they cannot.
@@ -234,6 +239,9 @@ pub struct Sight {
     /// A maximum HP and MP read far from the one known, and how many reads
     /// in a row have said it (see [`Sight::believe`]).
     far_max: [Option<(u64, u32)>; 2],
+    /// A frame size the layout does not fit, and on how many frames in a
+    /// row it has come (see [`SHAPE_HOLDS`]).
+    new_shape: Option<((u32, u32), u32)>,
 }
 
 /// How far, in points, a bar's fill may be from the teacher's last read
@@ -491,6 +499,7 @@ impl Sight {
             unread_since: [None; 3],
             observed_at: None,
             far_max: [None; 2],
+            new_shape: None,
         }
     }
 
@@ -849,7 +858,19 @@ impl Sight {
         let due = self
             .find_tried
             .is_none_or(|t| now.duration_since(t) >= FIND_EVERY);
-        if !fits && due {
+        let size = frame.dimensions();
+        let settled = if fits || self.layout.is_none() {
+            self.new_shape = None;
+            true
+        } else {
+            let n = match self.new_shape {
+                Some((s, n)) if s == size => n.saturating_add(1),
+                _ => 1,
+            };
+            self.new_shape = Some((size, n));
+            n >= SHAPE_HOLDS
+        };
+        if !fits && due && settled {
             self.find_tried = Some(now);
             let _find = tracing::trace_span!("sight.find").entered();
             if self.find_hud(frame).is_err() {
@@ -1904,7 +1925,9 @@ mod tests {
         assert_eq!(again.wants(1920, 800), None);
         let blank = RgbaImage::from_pixel(1920, 800, image::Rgba([20, 20, 20, 255]));
         let t0 = Instant::now();
-        again.observe(&blank, t0);
+        for _ in 0..SHAPE_HOLDS {
+            again.observe(&blank, t0);
+        }
         assert!(again.find_failing_since.is_some());
         assert_eq!(again.wants(1920, 800), None);
         again.find_failing_since = Some(t0 - FIND_FOR);
@@ -3269,5 +3292,37 @@ mod tests {
         assert_eq!(hp_bar(&sight), before);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn one_frame_of_another_shape_does_not_replace_the_layout() {
+        let dir = temp_dir("shape");
+        let mut sight = Sight::load(&dir);
+        sight
+            .calibrated(&status_bar(60.0, 100.0), &calibration())
+            .unwrap();
+        let kept = sight.layout.clone().unwrap();
+        assert!(!kept.hp.as_ref().unwrap().readings.is_empty());
+        // The same HUD on a wider frame (a resize under way, a frame that
+        // lags it): once, it is no new screen.
+        let wide = image::imageops::resize(
+            &status_bar(60.0, 100.0),
+            1280,
+            600,
+            image::imageops::FilterType::Nearest,
+        );
+        let t0 = Instant::now();
+        sight.observe(&wide, t0);
+        assert_eq!(sight.layout.as_ref(), Some(&kept));
+        assert_eq!(Sight::load(&dir).layout.as_ref(), Some(&kept));
+        // Back to the shape it knows, then the new shape for good: looked
+        // for once it has held.
+        sight.observe(&status_bar(60.0, 100.0), t0 + Duration::from_millis(100));
+        for n in 0..SHAPE_HOLDS {
+            assert_eq!(sight.layout.as_ref().unwrap().frame, (1280, 720), "{n}");
+            sight.observe(&wide, t0 + Duration::from_millis(200 + 100 * n as u64));
+        }
+        assert_eq!(sight.layout.as_ref().unwrap().frame, (1280, 600));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
