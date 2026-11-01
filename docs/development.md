@@ -10,7 +10,7 @@ See [vision-architecture.md](vision-architecture.md) for the existing detector-o
 
 ## Module Layout
 
-Every pixel operation is [Syrup](https://github.com/boggioMichael/syrup)'s
+Every pixel operation is [Syrup](https://github.com/datta-syrup/syrup)'s
 (a Cargo git dependency, pinned): capture, geometry, colour, bars, glyph
 reading, template matching, tracking, motion, OCR, quality. This crate
 keeps what the pixels mean in MapleStory, and the orchestration.
