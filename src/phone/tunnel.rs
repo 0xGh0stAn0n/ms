@@ -61,8 +61,8 @@ fn binary_name() -> &'static str {
     }
 }
 
-/// Where a cloudflared may already be: next to MapleSyrup, on the PATH,
-/// where thelip-server keeps its own, or where MapleSyrup saved one before.
+/// Where a cloudflared may already be: next to MapleSyrup, on the PATH, or
+/// where MapleSyrup saved one before.
 pub fn find(settings: &Path) -> Option<PathBuf> {
     let name = binary_name();
     let mut candidates = Vec::new();
@@ -73,9 +73,6 @@ pub fn find(settings: &Path) -> Option<PathBuf> {
     }
     if let Some(path) = std::env::var_os("PATH") {
         candidates.extend(std::env::split_paths(&path).map(|dir| dir.join(name)));
-    }
-    if cfg!(windows) {
-        candidates.push(PathBuf::from(r"C:\Users\Public\thelip-server").join(name));
     }
     candidates.push(settings.join(name));
     candidates.into_iter().find(|p| p.is_file())
