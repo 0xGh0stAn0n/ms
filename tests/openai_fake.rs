@@ -2116,11 +2116,13 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         json!({"type": "function", "name": "look_it_up", "strict": true, "parameters": {}}),
     ]);
     // As it adapted to the player: a little less eager, their words; and
-    // quick speech.
+    // quick speech. A PC's browser across the desk, its language Hebrew.
     let tuning = ms::ai::live::Tuning {
         eagerness: "medium".into(),
         words: Some("MapleStory. Names and words the player uses: Zakum, MoonWalker77.".into()),
         speed: 1.15,
+        mic: ms::ai::live::Mic::Far,
+        language: Some("he".into()),
     };
     let call = live.session(&instructions, &tools, &tuning).unwrap();
     // The full model isn't there for this key: the smaller one is used.
@@ -2152,7 +2154,11 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         session["audio"]["input"]["turn_detection"]["eagerness"],
         "medium"
     );
-    assert!(session["audio"]["input"]["transcription"]["language"].is_null());
+    // What they say is written down in the phone's language; the noise is
+    // cleaned for a microphone across the desk; it thinks a little first.
+    assert_eq!(session["audio"]["input"]["transcription"]["language"], "he");
+    assert_eq!(session["audio"]["input"]["noise_reduction"]["type"], "far_field");
+    assert_eq!(session["reasoning"]["effort"], "low");
     assert!(
         session["audio"]["input"]["transcription"]["prompt"]
             .as_str()

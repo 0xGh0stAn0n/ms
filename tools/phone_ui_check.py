@@ -112,6 +112,8 @@ CLIP_SECONDS = {"default": 8}
 # What the stand-in PC reads off the game for a call (/api/eyes), and the
 # call's instructions once the level it talks at has changed (/api/instructions).
 EYES = "The MapleStory window is open and in view.\nCharacter: level 152.\nHP 11%, MP about 40%."
+# Whether the stand-in PC sees the game at all (/api/eyes's `seen`).
+EYES_SEEN = {"on": True}
 INSTRUCTIONS = "You are MapleSyrup. Your attitude: friendly."
 # Whether the stand-in PC can start a call (/api/live): off, a call that
 # fails to open.
@@ -181,7 +183,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with LOCK: seconds = CLIP_SECONDS.get(q.get("seq"), CLIP_SECONDS["default"])
             self._send(200, wav(8000, pcm(seconds, 8000)), "audio/wav")
         elif path == "/api/mouth": self._log(); self._send(200, b'{"step_ms": 40, "levels": []}', "application/json")
-        elif path == "/api/eyes": self._log(); self._send(200, json.dumps({"snapshot": EYES, "image": None}).encode(), "application/json")
+        elif path == "/api/eyes": self._log(); self._send(200, json.dumps({"snapshot": EYES, "image": None, "seen": EYES_SEEN["on"]}).encode(), "application/json")
         elif path == "/api/instructions": self._log(); self._send(200, json.dumps({"instructions": INSTRUCTIONS, "tone": "friendly"}).encode(), "application/json")
         elif path == "/api/share": self._log(); self._send(200, json.dumps(share_view()).encode(), "application/json")
         elif path == "/api/stats": self._log(); self._send(200, json.dumps({"sessions": SESSIONS, "share": {"on": SHARE["on"]}}).encode(), "application/json")
@@ -1006,6 +1008,29 @@ def live_checks(browser):
     greeting = items_with("opened the call")
     assert len(greeting) == 1 and "say you'll shout if their HP drops and they can ask you anything" in greeting[0]["item"]["content"][0]["text"], greeting
     event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
+    # A PC's browser (no touch screen): the call is told its microphone is
+    # across the desk, and cleans its noise for that.
+    started = [r for r in requests_since(t0, "/api/live") if r["body"]]
+    assert started and started[-1]["body"].get("mic") == "far", started
+    # The player starts talking: the game as read goes with it. The game
+    # not seen (MapleStory not open) is told once, not with every word;
+    # once it is seen, the reading goes with their words again.
+    def readings(): return len(items_with("The game right now"))
+    EYES_SEEN["on"] = False
+    before = readings()
+    event({"type": "input_audio_buffer.speech_started"})
+    wait_for(lambda: readings() == before + 1, 3, "the game not seen was not told")
+    event({"type": "input_audio_buffer.speech_stopped"})
+    page.wait_for_timeout(4300)
+    event({"type": "input_audio_buffer.speech_started"})
+    page.wait_for_timeout(1200)
+    assert readings() == before + 1, "the game not seen was told again"
+    event({"type": "input_audio_buffer.speech_stopped"})
+    EYES_SEEN["on"] = True
+    page.wait_for_timeout(3200)
+    event({"type": "input_audio_buffer.speech_started"})
+    wait_for(lambda: readings() == before + 2, 3, "the game seen again was not read with their words")
+    event({"type": "input_audio_buffer.speech_stopped"})
     # On the call, one of MapleSyrup's own lines (the answer to a button) is
     # handed to the call to say, never to the phone's own voice.
     line(1, "reply", "Marked. That's mark 1.")

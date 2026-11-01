@@ -211,11 +211,17 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     from the call's own greeting (`new_player` in the status).
   - **Talker and thinker** (`ai::live`, `ai::thinker`): with an OpenAI key
     the live call is the voice, in every mode: OpenAI's newest realtime
-    model, asked for `REASONING_EFFORT` ("minimal") so it answers at once,
-    seeing the game only as the vision engine reads it (`/api/eyes?image=0`
-    with the player's words; no pictures anywhere in a reply or a coach's
-    look — `look_closer` and `learn_thing` take no box then, and the PC's
-    eyes look over the whole screen). A question that needs working out it
+    model, asked for `REASONING_EFFORT` ("low", the model's default: the
+    least, "minimal", was barely quicker and understood far less — it
+    answered noise with the game), seeing the game only as the vision
+    engine reads it (`/api/eyes?image=0` with the player's words; the game
+    not seen — `seen: false` — is told once, not with every word; no
+    pictures anywhere in a reply or a coach's look — `look_closer` and
+    `learn_thing` take no box then, and the PC's eyes look over the whole
+    screen). The page says where its microphone is (`mic`: a phone near, a
+    PC's browser far; `live::Mic` picks the noise reduction), and what the
+    player says is written down in the phone's language
+    (`Tuning::language`, `language::code`). A question that needs working out it
     announces like a person and hands over through `THINK_TOOL`: the PC
     (`LiveService::think`) posts it to Claude's board as a `question`
     (`Board::ask`) while a Claude Code session listens and waits

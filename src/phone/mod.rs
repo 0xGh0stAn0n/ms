@@ -217,8 +217,13 @@ pub trait Service: Send + Sync {
     /// A short-lived key for the call, and where to connect: `{key, url,
     /// model, tone}` (`tone`: the level of the bar it talks at).
     /// `recent`: the last things said (a call picked up again);
-    /// `language`: the phone's language.
-    fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String>;
+    /// `language`: the phone's language; `mic`: where its microphone is.
+    fn live(
+        &self,
+        recent: &[String],
+        language: Option<&str>,
+        mic: crate::ai::live::Mic,
+    ) -> Result<Value, String>;
     /// The call's instructions as they are now: `{instructions, tone}`.
     /// The phone asks for them when the level it talks at changes during a
     /// call (the bar, the age answered, the player objecting to the tone)
@@ -251,11 +256,13 @@ pub trait Recording: Send + Sync {
 }
 
 /// What the call's model can see: the frame (only while the game is the
-/// window in front), and what is read off it.
+/// window in front), what is read off it, and whether the game is seen at
+/// all (open, in front or behind).
 #[derive(Default, Clone)]
 struct Sight {
     frame: Option<Arc<RgbaImage>>,
     snapshot: String,
+    seen: bool,
 }
 
 /// The picture for a call: the frame with rulers, as a small JPEG (quick for
@@ -600,9 +607,16 @@ impl Hub {
     }
 
     /// What a call's model can see now: the frame (None while the game is
-    /// not in view), and what is read off it.
-    pub fn set_sight(&self, frame: Option<Arc<RgbaImage>>, snapshot: String) {
-        self.lock().sight = Sight { frame, snapshot };
+    /// not in view), what is read off it, and whether the game is seen at
+    /// all (`seen`: the page tells a call once that it isn't, not with
+    /// every word — told every time, the call answered everything with
+    /// "open the game").
+    pub fn set_sight(&self, frame: Option<Arc<RgbaImage>>, snapshot: String, seen: bool) {
+        self.lock().sight = Sight {
+            frame,
+            snapshot,
+            seen,
+        };
     }
 
     /// The reply was cut short (the player talked over it): the phone stops
@@ -1048,7 +1062,8 @@ impl Hub {
                     .take(20)
                     .collect();
                 let language = text_field("lang").filter(|l| plausible_locale(l));
-                match service.live(&recent, language.as_deref()) {
+                let mic = crate::ai::live::Mic::from_page(text_field("mic").as_deref());
+                match service.live(&recent, language.as_deref(), mic) {
                     Ok(call) => Response::json(200, &call).with_header("Cache-Control", "no-store"),
                     Err(why) => Response::json(502, &json!({"error": why})),
                 }
@@ -1075,7 +1090,10 @@ impl Hub {
                     .as_deref()
                     .filter(|_| request.param("image") != Some("0"))
                     .map(eyes_picture);
-                Response::json(200, &json!({"snapshot": sight.snapshot, "image": image}))
+                Response::json(
+                    200,
+                    &json!({"snapshot": sight.snapshot, "image": image, "seen": sight.seen}),
+                )
             }
             ("POST", "/api/tool") => {
                 let Some(service) = self.service() else {
@@ -1524,9 +1542,14 @@ mod tests {
     struct FakeService;
 
     impl Service for FakeService {
-        fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String> {
+        fn live(
+            &self,
+            recent: &[String],
+            language: Option<&str>,
+            mic: crate::ai::live::Mic,
+        ) -> Result<Value, String> {
             Ok(
-                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "tone": "savage"}),
+                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "tone": "savage", "mic": mic.noise_reduction()}),
             )
         }
         fn instructions(&self, language: Option<&str>) -> Value {
@@ -1621,7 +1644,7 @@ mod tests {
         let r = hub.handle(&request(
             "POST",
             "/api/live?k=k1",
-            r#"{"recent": ["Player: hi", "MapleSyrup: hey"], "lang": "he-IL"}"#,
+            r#"{"recent": ["Player: hi", "MapleSyrup: hey"], "lang": "he-IL", "mic": "far"}"#,
         ));
         assert_eq!(r.status, 200);
         let call: Value = serde_json::from_slice(&r.body).unwrap();
@@ -1631,6 +1654,11 @@ mod tests {
         );
         assert_eq!(call["lang"], "he-IL");
         assert_eq!(call["tone"], "savage");
+        // A PC's browser: its microphone is across the desk.
+        assert_eq!(call["mic"], "far_field");
+        let r = hub.handle(&request("POST", "/api/live?k=k1", r#"{"lang": "he-IL"}"#));
+        let call: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(call["mic"], "near_field");
         // The level it talks at changed mid-call: the instructions as they
         // are now, for the page to hand to the call.
         let r = hub.handle(&request("GET", "/api/instructions?k=k1&lang=he-IL", ""));
@@ -1642,17 +1670,20 @@ mod tests {
             hub.handle(&request("GET", "/api/instructions", "")).status,
             403
         );
-        // The screen only once there is one (the game in front); always the snapshot.
+        // The screen only once there is one (the game in front); always the
+        // snapshot, and whether the game is seen at all.
         let r = hub.handle(&request("GET", "/api/eyes?k=k1", ""));
         let eyes: Value = serde_json::from_slice(&r.body).unwrap();
         assert!(eyes["image"].is_null());
+        assert_eq!(eyes["seen"], false);
         let frame = RgbaImage::from_fn(1920, 1080, |x, y| {
             image::Rgba([(x % 256) as u8, (y % 256) as u8, ((x ^ y) % 256) as u8, 255])
         });
-        hub.set_sight(Some(Arc::new(frame)), "HP about 75%.".into());
+        hub.set_sight(Some(Arc::new(frame)), "HP about 75%.".into(), true);
         let r = hub.handle(&request("GET", "/api/eyes?k=k1", ""));
         let eyes: Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(eyes["snapshot"], "HP about 75%.");
+        assert_eq!(eyes["seen"], true);
         let image = eyes["image"].as_str().unwrap();
         // Small enough for the call's data channel, even from a screen of noise.
         assert!(

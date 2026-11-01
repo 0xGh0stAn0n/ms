@@ -2375,6 +2375,7 @@
       const db = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
       $("meter").style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
       if (latencyOn() && db > floorDb + LATENCY_VOICE_DB) voiceAt = Date.now();
+      if (liveCall.userTalking && db > liveCall.voiceDb) liveCall.voiceDb = db;
       talkingOver(db);
       if (!sendAudio.checked) return;
       const a = audio, both = recordingOn();
@@ -2839,7 +2840,7 @@
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
     pending: [], eyesAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
-    stoppedAt: 0, firstSoundTold: true,
+    stoppedAt: 0, firstSoundTold: true, toldUnseen: false, voiceDb: -100,
     // A response under way (since when; 0: none), one asked for while it
     // was, and the level it talks at and API the call was started with.
     responding: 0, respondWanted: false, flushing: false, tone: "", api: "ga" };
@@ -2865,11 +2866,20 @@
   }
   function nowT() { return uptimeAt.uptime + (Date.now() - uptimeAt.at) / 1000; }
 
+  // Where this page's microphone is, for how the call cleans its noise: a
+  // phone or a tablet is held close; a PC's browser hears across the desk,
+  // and cleaned as if close, the player's own voice went too.
+  function micPlace() {
+    const handheld = !!window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+    return handheld ? "near" : "far";
+  }
+
   async function startLive(stream) {
     liveCall.starting = true;
+    liveCall.toldUnseen = false;
     $("micStatus").textContent = t("live_connecting");
     try {
-      const r = await postJson("/api/live", { recent: liveCall.recent.slice(-12), lang: locale });
+      const r = await postJson("/api/live", { recent: liveCall.recent.slice(-12), lang: locale, mic: micPlace() });
       const call = await r.json().catch(() => ({}));
       if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
       liveCall.hint = call.hint || "";
@@ -2953,6 +2963,7 @@
         // PC counts these, and makes calls wait a little longer).
         if (liveCall.talking && Date.now() - liveCall.talkingAt < 1000) postJson("/api/turn", { what: "jumped in" }).catch(() => {});
         liveCall.userTalking = true;
+        liveCall.voiceDb = -100;
         liveCall.startedAt = Date.now();
         // The answer to their words will take in what was added meanwhile.
         liveCall.respondWanted = false;
@@ -2964,6 +2975,10 @@
       case "input_audio_buffer.speech_stopped":
         liveCall.userTalking = false;
         postJson("/api/talking", { on: false, who: "player" }).catch(() => {});
+        // How loud the words the call heard were, against the room: a voice
+        // that barely clears the room is heard as noise (a microphone far
+        // off, or turned down), and the call makes up what was said.
+        if (audio && liveCall.voiceDb > -100) liveTiming("live: the player's voice peaked at " + Math.round(liveCall.voiceDb) + " dB, the room about " + Math.round(floorDb) + " dB");
         liveCall.stoppedAt = liveCall.heardStopAt = Date.now();
         liveCall.firstSoundTold = false;
         setTimeout(flushSay, 400);
@@ -3068,6 +3083,12 @@
       const r = await api("/api/eyes?image=0");
       if (!r.ok) return;
       const e = await r.json();
+      // The game not seen (not open, or not to be read) is said once, not
+      // with every word: told every time, the call answered everything
+      // with "open the game".
+      const seen = e.seen !== false;
+      if (!seen && liveCall.toldUnseen) return;
+      liveCall.toldUnseen = !seen;
       const content = [{ type: "input_text",
         text: "[The game right now, read by your vision engine — not said by the player]\n" + (e.snapshot || "") }];
       liveSend({ type: "conversation.item.create", item: { type: "message", role: "user", content } });

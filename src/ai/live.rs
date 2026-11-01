@@ -44,11 +44,14 @@ pub const LIVE_MODELS: &[&str] = &[
 pub const TRANSCRIBE_MODEL: &str = "gpt-4o-mini-transcribe";
 /// Where the phone sends its WebRTC offer.
 pub const CALLS_URL: &str = "https://api.openai.com/v1/realtime/calls";
-/// How long the call's model thinks before it speaks: the least, so it
-/// answers at once, like a person in a conversation. What needs real
-/// thinking goes to the thinker ([`THINK_TOOL`]) instead. (A model that
+/// How long the call's model thinks before it speaks: low, the model's own
+/// default. The least ("minimal") is barely quicker to the first sound but
+/// understands far less of what it hears (Artificial Analysis, Oct 2026:
+/// gpt-realtime-2 72% against 97% on Big Bench Audio for 0.02 s; on a
+/// call it answered noise with the game and drifted into English). What
+/// needs real thinking goes to the thinker ([`THINK_TOOL`]). (A model that
 /// takes no such setting is asked again without it.)
-pub const REASONING_EFFORT: &str = "minimal";
+pub const REASONING_EFFORT: &str = "low";
 /// The tool the call hands a question that needs thinking to: Claude when
 /// it is connected, else MapleSyrup's own thinking model (the PC's
 /// `Thinker`). The call says it will think a moment, and says the answer
@@ -67,13 +70,15 @@ them while they play, like a friend on voice chat.";
 /// What else a call needs to know, after the rules and the attitude.
 const LIVE_MORE: &str = "On the call:
 - Speak fast, like a gamer on comms: no pauses, no drawn-out words. Short turns; let them talk.
-- Speak the language the player speaks, every time. When they switch languages, switch with them at once; when \
-they mix languages in one sentence (Hebrew and English, say), answer the same way. A language you were told to use \
-\"by default\" is for when their words have no language: it never overrides the one they are speaking now. Say \
-game words the way players say them.
+- Speak the language the player speaks, every time. When they clearly say a sentence in another language, switch \
+with them at once; when they mix languages in one sentence (Hebrew and English, say), answer the same way. A \
+language you were told to use \"by default\" is for when their words have no language: it never overrides the one \
+they are speaking now. Noise, a word or two you aren't sure of, a video or your own voice coming back never change \
+the language. Say game words the way players say them.
 - Never say again what you said in your last two turns unless they ask again. Never report their level, map or bars \
 unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask about \
-the game. If what you heard makes no sense, say in a few words that you didn't catch it.
+the game. If what you heard makes no sense, or was only noise, say in a few words, in the language you were \
+speaking, that you didn't catch it — never answer it with the game.
 - If they talk over you, stop and go with what they just said; don't repeat what you had said.
 - When they speak you also get a message that is not from them: what your vision engine reads off the game right \
 now — level, HP, MP, EXP (values marked \"about\" are estimates), the map, what moves on the screen, an open \
@@ -151,7 +156,8 @@ pub fn instructions(
         .map(super::language::name)
     {
         text.push_str(&format!(
-            "\n\nThe player's phone is set to {name}: start in {name} until they speak; then follow them."
+            "\n\nThe player's phone is set to {name}: speak {name} until they clearly speak another language; \
+then follow them."
         ));
     }
     if !learned.trim().is_empty() {
@@ -171,6 +177,43 @@ pub fn instructions(
     text
 }
 
+/// Where the microphone is, which decides how the call cleans noise from
+/// it. Close to the mouth (a phone in the hand, a headset), everything
+/// farther is noise to drop; across the desk (a PC's or a laptop's, a
+/// webcam's), the player's own voice comes from afar, and cleaning for a
+/// close one drops it too: the call heard noise, made up what was said and
+/// answered that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mic {
+    #[default]
+    Near,
+    Far,
+}
+
+/// The page's words for where its microphone is (`/api/live`'s `mic`): a
+/// phone or a tablet is taken as held close, a PC's browser as across the
+/// desk.
+pub const MIC_NEAR: &str = "near";
+pub const MIC_FAR: &str = "far";
+
+impl Mic {
+    /// The page's word for it; anything else is the usual, close.
+    pub fn from_page(word: Option<&str>) -> Mic {
+        match word.map(str::trim) {
+            Some(MIC_FAR) => Mic::Far,
+            _ => Mic::Near,
+        }
+    }
+
+    /// The Realtime API's noise reduction for it.
+    pub fn noise_reduction(self) -> &'static str {
+        match self {
+            Mic::Near => "near_field",
+            Mic::Far => "far_field",
+        }
+    }
+}
+
 /// How a call listens, as MapleSyrup adapted it to the player.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tuning {
@@ -180,6 +223,13 @@ pub struct Tuning {
     pub words: Option<String>,
     /// How fast it speaks (1 is its usual pace; a quick talker is snappier).
     pub speed: f64,
+    /// Where the phone's microphone is.
+    pub mic: Mic,
+    /// The language the player's phone is set to, as an ISO-639-1 code: what
+    /// they say is written down in it (left to itself, the transcriber
+    /// wrote noise down as English — "Thank you for watching" — on a call
+    /// in Hebrew). The call itself still hears and follows any language.
+    pub language: Option<String>,
 }
 
 /// A call speaks a little faster than the model's usual pace: it's a game.
@@ -191,6 +241,8 @@ impl Default for Tuning {
             eagerness: "high".into(),
             words: None,
             speed: SPEED,
+            mic: Mic::default(),
+            language: None,
         }
     }
 }
@@ -211,11 +263,16 @@ impl Tuning {
         }
     }
 
-    fn transcription(&self) -> Value {
+    /// How what they say is written down; `language`: told the language
+    /// to expect (a transcriber that won't take it is asked again without).
+    fn transcription(&self, language: bool) -> Value {
         let mut transcription = json!({"model": TRANSCRIBE_MODEL});
         if let Some(words) = self.words.as_deref().filter(|w| !w.trim().is_empty()) {
             let words: String = words.chars().take(800).collect();
             transcription["prompt"] = json!(words);
+        }
+        if let Some(code) = self.language.as_deref().filter(|_| language) {
+            transcription["language"] = json!(code);
         }
         transcription
     }
@@ -319,10 +376,11 @@ impl Live {
         tuning: &Tuning,
     ) -> Result<Value, AiError> {
         let mut last = AiError::Parse("no realtime model to try".into());
-        // (A model that won't take the speed, or how long to think, is asked
-        // again without it.)
+        // (A model that won't take the speed, or how long to think, or a
+        // transcriber that won't take the language, is asked again without.)
         let mut speed = true;
         let mut reasoning = true;
+        let mut language = true;
         let candidates = self.candidates();
         let mut index = 0;
         while let Some(model) = candidates.get(index).cloned() {
@@ -336,8 +394,8 @@ impl Live {
                 "instructions": instructions,
                 "audio": {
                     "input": {
-                        "noise_reduction": {"type": "near_field"},
-                        "transcription": tuning.transcription(),
+                        "noise_reduction": {"type": tuning.mic.noise_reduction()},
+                        "transcription": tuning.transcription(language),
                         "turn_detection": {
                             "type": "semantic_vad",
                             "eagerness": tuning.eagerness(),
@@ -390,6 +448,14 @@ impl Live {
                     reasoning = false;
                     continue;
                 }
+                Err(AiError::Http(400, message))
+                    if language
+                        && tuning.language.is_some()
+                        && message.to_lowercase().contains("language") =>
+                {
+                    language = false;
+                    continue;
+                }
                 // A model this key can't use: the next one.
                 Err(AiError::Http(status @ (400 | 403 | 404), message))
                     if message.to_lowercase().contains("model") =>
@@ -425,8 +491,8 @@ impl Live {
             "voice": self.voice,
             "instructions": instructions,
             "modalities": ["audio", "text"],
-            "input_audio_transcription": tuning.transcription(),
-            "input_audio_noise_reduction": {"type": "near_field"},
+            "input_audio_transcription": tuning.transcription(true),
+            "input_audio_noise_reduction": {"type": tuning.mic.noise_reduction()},
             "turn_detection": {"type": "semantic_vad", "eagerness": tuning.eagerness(), "create_response": true, "interrupt_response": true},
             "tools": tools,
             "tool_choice": "auto",
@@ -564,29 +630,59 @@ is fine, once"
     fn a_call_listens_the_way_it_adapted_to() {
         let usual = Tuning::default();
         assert_eq!(usual.eagerness(), "high");
-        assert!(usual.transcription().get("prompt").is_none());
+        assert!(usual.transcription(true).get("prompt").is_none());
+        assert!(usual.transcription(true).get("language").is_none());
+        assert_eq!(usual.mic.noise_reduction(), "near_field");
         let tuned = Tuning {
             eagerness: "medium".into(),
             words: Some("MapleStory. Names and words the player uses: Zakum, MoonWalker77.".into()),
             speed: 9.0,
+            mic: Mic::Far,
+            language: Some("he".into()),
         };
         assert_eq!(tuned.speed(), 1.5);
         assert_eq!(usual.speed(), SPEED);
         assert_eq!(tuned.eagerness(), "medium");
-        assert_eq!(tuned.transcription()["model"], TRANSCRIBE_MODEL);
+        assert_eq!(tuned.transcription(true)["model"], TRANSCRIBE_MODEL);
         assert!(
-            tuned.transcription()["prompt"]
+            tuned.transcription(true)["prompt"]
                 .as_str()
                 .unwrap()
                 .contains("MoonWalker77")
         );
+        // What they say is written down in the phone's language, unless the
+        // transcriber wouldn't take it.
+        assert_eq!(tuned.transcription(true)["language"], "he");
+        assert!(tuned.transcription(false).get("language").is_none());
+        // A PC's microphone across the desk: its noise is cleaned for that.
+        assert_eq!(tuned.mic.noise_reduction(), "far_field");
         let odd = Tuning {
             eagerness: "very".into(),
             words: None,
             speed: f64::NAN,
+            ..Tuning::default()
         };
         assert_eq!(odd.speed(), 1.0);
         assert_eq!(odd.eagerness(), "high");
+    }
+
+    #[test]
+    fn the_page_says_where_its_microphone_is() {
+        assert_eq!(Mic::from_page(Some(MIC_FAR)), Mic::Far);
+        assert_eq!(Mic::from_page(Some(MIC_NEAR)), Mic::Near);
+        // Anything else, or nothing (an older page): held close, as always.
+        assert_eq!(Mic::from_page(Some("sideways")), Mic::Near);
+        assert_eq!(Mic::from_page(None), Mic::Near);
+    }
+
+    #[test]
+    fn a_call_thinks_a_little_and_keeps_to_the_language_it_was_set_to() {
+        // Low, not the least: the least understood far less of what it heard.
+        assert_eq!(REASONING_EFFORT, "low");
+        let text = instructions("", &[], Some("he-IL"), Spectrum::get().of_voice(Default::default()));
+        assert!(text.contains("speak Hebrew until they clearly speak another language"));
+        assert!(text.contains("never change the language"));
+        assert!(text.contains("never answer it with the game"));
     }
 
     #[test]

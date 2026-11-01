@@ -1379,17 +1379,25 @@ impl LiveService {
 }
 
 impl phone::Service for LiveService {
-    fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
+    fn live(
+        &self,
+        recent: &[String],
+        language: Option<&str>,
+        mic: ai::live::Mic,
+    ) -> Result<serde_json::Value, String> {
         let (instructions, level) = self.instructions_with(recent, language);
         let mut tools = ai::live::tools(self.toolbox.definitions());
         tools.push(ai::live::think_tool());
-        // How it adapted to the player: how soon to answer, their words.
+        // How it adapted to the player (how soon to answer, their words),
+        // and the phone's microphone and language.
         let tuning = {
             let memory = self.learning.memory();
             ai::live::Tuning {
                 eagerness: memory.adapt.eagerness.clone(),
                 words: memory.words_hint(),
                 speed: ai::live::SPEED,
+                mic,
+                language: language.and_then(ai::language::code),
             }
         };
         let mut call = self
@@ -6603,10 +6611,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 // the window in front.
                 if out.live_ok {
                     let front = in_front.load(Ordering::Relaxed);
-                    let in_view = front && companion.last().is_some_and(|o| o.game.is_seen());
+                    let seen = companion.last().is_some_and(|o| o.game.is_seen());
+                    let in_view = front && seen;
                     hub.set_sight(
                         latest_image.clone().filter(|_| in_view),
                         snapshot_text(&companion, sight.as_ref(), front),
+                        seen,
                     );
                 }
             }
