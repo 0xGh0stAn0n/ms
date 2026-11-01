@@ -41,6 +41,12 @@
   The phone's language the call is set to (default he-IL): every answer is
   checked to be in it.
 
+.PARAMETER UseRunning
+  Measure whatever MapleSyrup is running. By default the bench measures the
+  one beside it (the build under test): another MapleSyrup running (the
+  installed one) is closed for the run and started again afterwards as it
+  was, with its own command line.
+
 .NOTES
   Besides the questions it plays a room with nobody talking (does the call
   answer noise?) and talks over a long answer (how soon does it notice?).
@@ -57,6 +63,7 @@ param(
     [string]$Label = "",
     [string]$Mic = "far",
     [string]$Lang = "he-IL",
+    [switch]$UseRunning,
     [int]$Port = 8443,
     [string]$TtsVoice = "ash"
 )
@@ -300,7 +307,31 @@ function Test-Link {
     try { Invoke-Link "GET" "/api/state" $null | Out-Null; return $true } catch { return $false }
 }
 
+# The build under test is the one beside this bench: another MapleSyrup
+# running is closed for the run (asked first, then made to), and started
+# again afterwards as it was.
+$Restore = @()
 $Started = $null
+# (Whatever happens from here, what was running is started again.)
+try {
+if (-not $UseRunning) {
+    $others = @(Get-CimInstance Win32_Process -Filter "Name = 'MapleSyrup.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath -ne $Exe })
+    foreach ($o in $others) {
+        $Restore += [pscustomobject]@{ Path = $o.ExecutablePath; CommandLine = $o.CommandLine }
+        Write-Host "Closing $($o.ExecutablePath) for the run (it starts again afterwards)"
+        $p = Get-Process -Id $o.ProcessId -ErrorAction SilentlyContinue
+        if ($p) {
+            [void]$p.CloseMainWindow()
+            if (-not $p.WaitForExit(5000)) { Stop-Process -Id $o.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    if ($others.Count -gt 0) {
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Test-Link) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }
+    }
+}
+
 if (-not (Test-Link)) {
     Write-Host "Starting MapleSyrup for the run..."
     $Started = Start-Process -FilePath $Exe -ArgumentList "--no-overlay", "--no-voice", "--plain", "--no-update", "--latency" -WorkingDirectory $AppDir -WindowStyle Minimized -PassThru
@@ -311,15 +342,13 @@ if (-not (Test-Link)) {
     }
 }
 
-# Which MapleSyrup is measured: its program and when it was built (the
-# installed one if it was running, else the one beside this bench).
+# Which MapleSyrup is measured: its program and when it was built.
 $Measured = try {
     $proc = Get-Process -Name "MapleSyrup" -ErrorAction Stop | Select-Object -First 1
     "{0} ({1})" -f $proc.Path, (Get-Item $proc.Path).LastWriteTime.ToString("yyyy-MM-dd HH:mm")
 } catch { "unknown" }
 Write-Host "Measuring $Measured"
 
-try {
     # ---- the questions, as speech (synthesized once, then kept) -----------
     $QuestionsFile = if ($Questions) { $Questions } else { Join-Path $Here "questions.txt" }
     $Lines = if (Test-Path $QuestionsFile) {
@@ -598,4 +627,16 @@ try {
     $Summary | Write-Host
 } finally {
     if ($Started) { Stop-Process -Id $Started.Id -Force -ErrorAction SilentlyContinue }
+    # What was running before, started again with its own arguments.
+    foreach ($r in $Restore) {
+        $rest = ""
+        if ($r.CommandLine) {
+            $line = $r.CommandLine.Trim()
+            $rest = if ($line.StartsWith([string][char]34)) { $line.Substring($line.IndexOf([char]34, 1) + 1).Trim() } else { @($line -split '\s+', 2)[1] }
+        }
+        Start-Sleep -Milliseconds 800
+        $dir = Split-Path -Parent $r.Path
+        if ($rest) { Start-Process -FilePath $r.Path -ArgumentList $rest -WorkingDirectory $dir } else { Start-Process -FilePath $r.Path -WorkingDirectory $dir }
+        Write-Host "Started again: $($r.Path) $rest"
+    }
 }
