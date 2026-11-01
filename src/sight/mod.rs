@@ -305,6 +305,20 @@ const LOST_FOR: Duration = Duration::from_secs(20);
 /// it as fact.
 const MAP_FOR: Duration = Duration::from_secs(600);
 
+/// Write `text` to `path` whole or not at all: to a file beside it, then
+/// renamed over it, so a crash or a power cut mid-write (the vision thread
+/// saves while the game runs) never leaves a learned file cut short, which
+/// would be read back as nothing learned.
+pub(crate) fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tmp");
+    let temp = PathBuf::from(temp);
+    std::fs::write(&temp, text)?;
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
+}
+
 fn now_text() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
 }
@@ -483,10 +497,10 @@ impl Sight {
         if let Some(layout) = &self.layout
             && let Ok(t) = serde_json::to_string_pretty(layout)
         {
-            let _ = std::fs::write(self.dir.join("layout.json"), t);
+            let _ = write_atomic(&self.dir.join("layout.json"), &t);
         }
         if let Ok(t) = serde_json::to_string_pretty(&self.facts) {
-            let _ = std::fs::write(self.dir.join("facts.json"), t);
+            let _ = write_atomic(&self.dir.join("facts.json"), &t);
         }
     }
 
@@ -3197,6 +3211,25 @@ mod tests {
             sight.observe(&wide, t0 + Duration::from_millis(200 + 100 * n as u64));
         }
         assert_eq!(sight.layout.as_ref().unwrap().frame, (1280, 600));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn learned_files_are_written_whole_through_a_file_beside_them() {
+        let dir = temp_dir("atomic");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("facts.json");
+        std::fs::write(&path, "an older, longer version of the file").unwrap();
+        write_atomic(&path, "{}").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        // The sight saves through it.
+        let mut sight = Sight::load(&dir);
+        sight.facts.level = Some(61);
+        sight.save();
+        assert_eq!(Sight::load(&dir).facts.level, Some(61));
+        assert!(!dir.join("facts.json.tmp").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

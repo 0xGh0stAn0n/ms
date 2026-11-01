@@ -740,7 +740,7 @@ impl Numbers {
             .partition(|s| s.window.is_some());
         let saved = Saved { samples, classic };
         if let Ok(t) = serde_json::to_string_pretty(&saved) {
-            let _ = std::fs::write(self.dir.join("font.json"), t);
+            let _ = super::write_atomic(&self.dir.join("font.json"), &t);
         }
     }
 

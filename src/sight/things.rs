@@ -541,7 +541,7 @@ impl Things {
     pub fn save(&self) {
         let _ = std::fs::create_dir_all(&self.dir);
         if let Ok(text) = serde_json::to_string_pretty(&self.list) {
-            let _ = std::fs::write(self.dir.join("things.json"), text);
+            let _ = super::write_atomic(&self.dir.join("things.json"), &text);
         }
     }
 
