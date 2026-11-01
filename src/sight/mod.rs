@@ -234,6 +234,13 @@ pub struct Sight {
     /// A maximum HP and MP read far from the one known, and how many reads
     /// in a row have said it (see [`Sight::believe`]).
     far_max: [Option<(u64, u32)>; 2],
+    /// An HP or MP the font read far from both the last read and the bar
+    /// (more than [`FILL_AGREES`] points), on the frame before: provisional
+    /// until the next frame reads it too (see [`Sight::plausible`]).
+    jumped: [Option<f32>; 2],
+    /// The maximum HP and MP the font last read, and on how many frames in
+    /// a row: kept in the facts only once read twice running.
+    max_read: [Option<(u64, u32)>; 2],
 }
 
 /// How far, in points, a bar's fill may be from the teacher's last read
@@ -453,6 +460,8 @@ impl Sight {
             unread_since: [None; 3],
             observed_at: None,
             far_max: [None; 2],
+            jumped: [None; 2],
+            max_read: [None; 2],
         }
     }
 
@@ -889,7 +898,10 @@ impl Sight {
                 Field::Mp => seen.mp,
                 Field::Exp => seen.exp,
             };
-            let read = self.numbers.read(frame, field, &band);
+            let read = self
+                .numbers
+                .read(frame, field, &band)
+                .filter(|r| self.plausible(field, &r.value, bar));
             let percent = read.as_ref().map(|r| r.value.percent());
             let streak = self.numbers.cross_check(field, percent, bar);
             disagree = disagree.max(streak);
@@ -942,7 +954,7 @@ impl Sight {
                 (Field::Hp, Value::Amount { current, max }) => {
                     seen.hp_number = Some((*current, *max));
                     seen.hp = percent;
-                    if self.facts.hp_max != Some(*max) {
+                    if self.facts.hp_max != Some(*max) && self.max_held(0, *max) {
                         self.facts.hp_max = Some(*max);
                         self.save();
                     }
@@ -950,7 +962,7 @@ impl Sight {
                 (Field::Mp, Value::Amount { current, max }) => {
                     seen.mp_number = Some((*current, *max));
                     seen.mp = percent;
-                    if self.facts.mp_max != Some(*max) {
+                    if self.facts.mp_max != Some(*max) && self.max_held(1, *max) {
                         self.facts.mp_max = Some(*max);
                         self.save();
                     }
@@ -1126,6 +1138,62 @@ impl Sight {
             return None;
         }
         Some(fill)
+    }
+
+    /// Whether an HP or MP the font read this frame is to be trusted: its
+    /// maximum as a teacher's read's is ([`Sight::believe`]), and a percent
+    /// more than [`FILL_AGREES`] points from both the last read and the
+    /// bar's fill only once the next frame reads it too. One frame of a
+    /// lost digit — `5600/5600` read as `600/5600` — is otherwise an 11%
+    /// read at full HP, and a "drink a potion" (a number read is trusted
+    /// as it comes, deaths and all). EXP is read as it comes.
+    fn plausible(&mut self, field: Field, value: &Value, bar: Option<f32>) -> bool {
+        let i = match field {
+            Field::Hp => 0,
+            Field::Mp => 1,
+            Field::Exp => return true,
+        };
+        let Value::Amount { current, max } = *value else {
+            return true;
+        };
+        self.max_read[i] = Some(match self.max_read[i] {
+            Some((m, n)) if m == max => (m, n.saturating_add(1)),
+            _ => (max, 1),
+        });
+        let amount = Some((current, max));
+        let v = if i == 0 {
+            HudValues {
+                hp: amount,
+                ..Default::default()
+            }
+        } else {
+            HudValues {
+                mp: amount,
+                ..Default::default()
+            }
+        };
+        let (believed, _) = self.believe(&v);
+        if believed.hp.or(believed.mp).is_none() {
+            return false;
+        }
+        let p = value.percent();
+        let last = self.told[i].map(|t| t.percent);
+        let far = |from: Option<f32>| from.is_none_or(|f| (p - f).abs() > FILL_AGREES);
+        if (last.is_some() || bar.is_some()) && far(last) && far(bar) {
+            let again = self.jumped[i].is_some_and(|q| (p - q).abs() <= FILL_AGREES);
+            if !again {
+                self.jumped[i] = Some(p);
+                return false;
+            }
+        }
+        self.jumped[i] = None;
+        true
+    }
+
+    /// Whether the font read maximum `max` of HP (0) or MP (1) on two
+    /// frames running at least: then it is the character's, and kept.
+    fn max_held(&self, i: usize, max: u64) -> bool {
+        self.max_read[i].is_some_and(|(m, n)| m == max && n >= 2)
     }
 
     /// `v` as believed: an HP or MP whose maximum is far from the one known
@@ -2854,5 +2922,114 @@ mod tests {
         assert!(line.contains("looked for again"), "{line}");
         assert_eq!(sight.wants(1280, 720), Some(Want::Calibrate));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sight that reads the numbers in the font, taught on a HUD of HP
+    /// 400/400, MP 1291/1351 and EXP 37.51% (as in
+    /// `the_numbers_are_read_every_frame_once_the_teacher_spelled_them_out`).
+    fn font_sight(name: &str) -> (Sight, PathBuf) {
+        let dir = temp_dir(name);
+        let mut sight = Sight::load(&dir);
+        let (frame, bands) = numbers::tests::hud((400, 400), (1291, 1351), 37.51);
+        let c = Calibration {
+            level: None,
+            hp: Some(bands[0].grown(0.05, 0.4)),
+            mp: Some(bands[1].grown(0.05, 0.4)),
+            exp: Some(bands[2].grown(0.05, 0.4)),
+            minimap: None,
+            values: HudValues {
+                hp: Some((400, 400)),
+                mp: Some((1291, 1351)),
+                exp_percent: Some(37.51),
+                hp_text: Some("HP [400/400]".into()),
+                mp_text: Some("MP [1291/1351]".into()),
+                exp_text: Some("EXP [37.51%]".into()),
+                ..Default::default()
+            },
+        };
+        sight.calibrated(&frame, &c).unwrap();
+        assert!(sight.numbers.knows(Field::Hp));
+        (sight, dir)
+    }
+
+    /// The HUD of `numbers::tests::hud` with its HP line saying `said` over
+    /// a bar drawn as full as `bar` (a misread, when the two differ).
+    fn hp_line_over(said: (u64, u64), bar: (u64, u64)) -> RgbaImage {
+        let (mut f, b) = numbers::tests::hud(said, (1291, 1351), 37.51);
+        let (drawn, _) = numbers::tests::hud(bar, (1291, 1351), 37.51);
+        let (x, y, w, h) = b[0].pixels(1280, 720);
+        for yy in y..y + h {
+            for xx in x..x + w {
+                f.put_pixel(xx, yy, *drawn.get_pixel(xx, yy));
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn a_font_read_far_from_the_last_read_and_the_bar_waits_for_a_second_frame() {
+        let (mut sight, dir) = font_sight("font-jump");
+        let t0 = Instant::now();
+        // HP full, the bar full: read as it is.
+        let seen = sight.observe(&hp_line_over((400, 400), (400, 400)), t0);
+        assert_eq!(seen.hp_number, Some((400, 400)), "{seen:?}");
+        // One frame reads "40/400" (a digit lost) over the full bar: 10%
+        // against the last read's 100% and the bar's 100% is no reading
+        // yet; the bar's fill stands.
+        let misread = hp_line_over((40, 400), (400, 400));
+        let at = t0 + Duration::from_millis(100);
+        let seen = sight.observe(&misread, at);
+        assert_eq!(seen.hp_number, None, "{seen:?}");
+        assert!(seen.hp.is_some_and(|hp| hp > 90.0), "{seen:?}");
+        let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+        sight.apply(&mut obs, &seen);
+        assert!(!obs.hp.unwrap().read, "never a read 10% at full HP");
+        // Back to 400/400: nothing happened.
+        let seen = sight.observe(
+            &hp_line_over((400, 400), (400, 400)),
+            t0 + Duration::from_millis(200),
+        );
+        assert_eq!(seen.hp_number, Some((400, 400)), "{seen:?}");
+        // The same number on two frames running is the number.
+        sight.observe(&misread, t0 + Duration::from_millis(300));
+        let seen = sight.observe(&misread, t0 + Duration::from_millis(400));
+        assert_eq!(seen.hp_number, Some((40, 400)), "{seen:?}");
+        assert!((seen.hp.unwrap() - 10.0).abs() < 0.01, "{seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_font_read_with_a_far_maximum_is_believed_only_once_it_holds_and_kept_only_when_repeated() {
+        let (mut sight, dir) = font_sight("font-max");
+        assert_eq!(sight.facts.hp_max, Some(400));
+        let t0 = Instant::now();
+        let at = |n: u64| t0 + Duration::from_millis(100 * n);
+        // "4000/4000" for 400/400: a maximum ten times the one known is a
+        // misread until it has held for three reads in a row.
+        let far = hp_line_over((4000, 4000), (400, 400));
+        for n in 0..2 {
+            let seen = sight.observe(&far, at(n));
+            assert_eq!(seen.hp_number, None, "{n}: {seen:?}");
+            assert_eq!(sight.facts.hp_max, Some(400), "{n}");
+        }
+        let seen = sight.observe(&far, at(2));
+        assert_eq!(seen.hp_number, Some((4000, 4000)), "{seen:?}");
+        assert_eq!(sight.facts.hp_max, Some(4000));
+        // A near maximum read once (400/410) is the frame's number, but not
+        // the character's maximum: that is kept only when read twice running.
+        let (mut sight, dir2) = font_sight("font-max-near");
+        sight.observe(&hp_line_over((400, 400), (400, 400)), at(0));
+        let seen = sight.observe(&hp_line_over((400, 410), (400, 410)), at(1));
+        assert_eq!(seen.hp_number, Some((400, 410)), "{seen:?}");
+        assert_eq!(sight.facts.hp_max, Some(400));
+        assert_eq!(Sight::load(&dir2).facts.hp_max, Some(400));
+        sight.observe(&hp_line_over((400, 400), (400, 400)), at(2));
+        assert_eq!(sight.facts.hp_max, Some(400));
+        // Twice running: kept.
+        sight.observe(&hp_line_over((400, 410), (400, 410)), at(3));
+        sight.observe(&hp_line_over((400, 410), (400, 410)), at(4));
+        assert_eq!(sight.facts.hp_max, Some(410));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 }
