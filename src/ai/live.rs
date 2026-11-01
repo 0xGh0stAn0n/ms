@@ -14,9 +14,10 @@
 //! ```
 //!
 //! The model hears the player directly: it understands whatever language
-//! they speak, follows them when they switch or mix languages, hears them
-//! while it talks (the phone cancels its own voice from its microphone), and
-//! stops and answers when talked over. MapleSyrup's own lines (low HP, a
+//! they speak and answers in the one set on their phone (asked for
+//! another, it sets the phone to it), hears them while it talks (the phone
+//! cancels its own voice from its microphone), and stops and answers when
+//! talked over. MapleSyrup's own lines (low HP, a
 //! level-up) are handed to it to say, so they come in the same voice and
 //! language: the watcher's at most once per 20 s and with the reading
 //! behind them (the PC's `Relay`), so the call passes a number on for HP
@@ -67,18 +68,62 @@ const LIVE_PERSONA: &str = "You are MapleSyrup: a fluffy cream-colored dog in a 
 and the player's buddy while they play MapleStory (the current global version). You're on a live voice call with \
 them while they play, like a friend on voice chat.";
 
+/// The call's language, in a section of its own right after who it is:
+/// OpenAI's voice prompting guide pins the language where switching is
+/// unwanted, keeps bridges, tool messages and answers in it, and takes no
+/// language from an accent. On the bench (1 Nov 2026), with the rule as a
+/// bullet among the others, a call set to Hebrew answered English
+/// questions in English and passed the thinker's English on as it came.
+/// `{name}` is the language set on the phone, `{NAME}` it in capitals.
+const LANGUAGE_SET: &str = "# Language
+- SPEAK ONLY {NAME}, the language set on the player's phone. Every word you say is {name}: greetings, answers, \
+\"let me think\" bridges, what the thinker or a tool hands you, the watcher's lines. Game names stay as players say \
+them, inside {name} sentences.
+- The player speaks {name}, mixing in English game words: hear them as {name}. When they say a whole sentence in \
+another language, answer it in {name} all the same.
+- Don't take a language from an accent, a word or two, noise, a video or your own voice coming back.
+- Switch only when the player asks you to speak another language, in any words: call set_language and go on in it \
+at once (it changes their phone's setting too).
+- Write think_it_through's question in {name}.";
+
+/// The call's language when none is set on the phone.
+const LANGUAGE_UNSET: &str = "# Language
+- No language is set on the player's phone: speak the language they speak. Every word you say is in it: \
+greetings, answers, \"let me think\" bridges, what the thinker or a tool hands you, the watcher's lines.
+- Don't take a language from an accent, a word or two, noise, a video or your own voice coming back.
+- When they ask you to speak a language, in any words: call set_language and go on in it at once (it sets their \
+phone's language too).";
+
+/// Whose words come first. On the bench (1 Nov 2026), a call that saw the
+/// player dead with little MP answered "hey, what's up?" with "MP is 3.7
+/// percent, restore it now": the game reading and the rule to say danger
+/// first outweighed what the player said.
+const EVERY_REPLY: &str = "# Every reply
+- Answer what the player just said, first and only: a greeting gets a greeting, a question its answer.
+- What your vision engine reads is for you to see the game by, not to report. Bring up HP, MP, a death, their \
+level or the map only when they ask about the game, when it changes the answer to what they asked, or when a \
+watcher line asks you to.
+- When these compete: the player's words first, then the watcher's line, then the reading.";
+
+/// Speech it couldn't make out, as OpenAI's voice prompting guide words
+/// it ("unintelligible" handled noise better than "inaudible"). `{in}` is
+/// the language to say so in.
+const UNCLEAR_AUDIO: &str = "# Unclear audio
+- Only respond to clear speech. If what you heard was unintelligible, noisy, cut off or made no sense: don't guess \
+and don't answer with the game; say in a few words, in {in}, that you didn't catch it (never the same words twice \
+in a row).";
+
+/// What to say "didn't catch it" in when no language is set on the phone.
+const UNCLEAR_IN_UNSET: &str = "the language you were speaking";
+
 /// What else a call needs to know, after the rules and the attitude.
 const LIVE_MORE: &str = "On the call:
 - Speak fast, like a gamer on comms: no pauses, no drawn-out words. Short turns; let them talk.
-- Speak the language set on their phone (below), every time, whatever language they talk to you in: you \
-understand them in any. When they ask you to speak another language, in any words, call set_language and go on in \
-it at once; when they ask you to talk to them another way (gentler, ruder, swearing or not, no filter), call \
-set_tone. Either changes their phone's setting too, where they see it. Noise, a word or two you aren't sure of, a \
-video or your own voice coming back never change the language. Say game words the way players say them.
+- When they ask you to talk to them another way (gentler, ruder, swearing or not, no filter), call set_tone; it \
+changes their phone's setting too, where they see it.
 - Never say again what you said in your last two turns unless they ask again. Never report their level, map or bars \
 unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask about \
-the game. If what you heard makes no sense, or was only noise, say in a few words, in the language you were \
-speaking, that you didn't catch it — never answer it with the game.
+the game.
 - If they talk over you, stop and go with what they just said; don't repeat what you had said.
 - When they speak you also get a message that is not from them: what your vision engine reads off the game right \
 now — level, HP, MP, EXP (values marked \"about\" are estimates), the map, what moves on the screen, an open \
@@ -147,14 +192,24 @@ pub fn instructions(
     language: Option<&str>,
     level: &crate::companion::spectrum::Level,
 ) -> String {
-    let mut text = format!(
-        "{LIVE_PERSONA}\n\n{}\n\n{LIVE_MORE}",
-        super::style::rules(level)
-    );
-    match language
+    let name = language
         .filter(|l| !l.trim().is_empty())
-        .map(super::language::name)
-    {
+        .map(super::language::name);
+    let (pinned, unclear_in) = match name {
+        Some(name) => (
+            LANGUAGE_SET
+                .replace("{NAME}", &name.to_uppercase())
+                .replace("{name}", name),
+            name,
+        ),
+        None => (LANGUAGE_UNSET.to_string(), UNCLEAR_IN_UNSET),
+    };
+    let mut text = format!(
+        "{LIVE_PERSONA}\n\n{pinned}\n\n{EVERY_REPLY}\n\n{}\n\n{}\n\n{LIVE_MORE}",
+        UNCLEAR_AUDIO.replace("{in}", unclear_in),
+        super::style::call_rules(level)
+    );
+    match name {
         Some(name) => text.push_str(&format!(
             "\n\nThe language set on the player's phone: {name}. Speak {name}."
         )),
@@ -688,15 +743,59 @@ is fine, once"
             Spectrum::get().of_voice(Default::default()),
         );
         assert!(text.contains("Speak Hebrew."));
-        assert!(text.contains("whatever language they talk to you in"));
-        assert!(text.contains("never change the language"));
-        assert!(text.contains("never answer it with the game"));
-        // Asked for another language or another way of talking, it changes
-        // the phone's setting (where they see it), by a tool.
-        assert!(text.contains("call set_tone"));
-        assert!(text.contains("Either changes their phone's setting too"));
+        // The language in a section of its own, right after who it is and
+        // before the rules: every word in it, whatever it hears; changed
+        // only when asked, by a tool that changes the phone's setting.
+        let section =
+            text.find("# Language\n- SPEAK ONLY HEBREW, the language set on the player's phone.");
+        assert_eq!(section, Some(LIVE_PERSONA.len() + 2), "{text}");
+        assert!(text.find("MapleSyrup's rules").unwrap() > section.unwrap());
+        assert!(text.contains("Every word you say is Hebrew: greetings, answers, \"let me think\" bridges, what the thinker or a tool hands you"));
+        assert!(text.contains(
+            "When they say a whole sentence in another language, answer it in Hebrew all the same."
+        ));
+        assert!(text.contains("Don't take a language from an accent"));
+        assert!(text.contains("Switch only when the player asks you to speak another language"));
+        assert!(text.contains("Write think_it_through's question in Hebrew."));
+        assert!(!text.contains("Speak the language set on their phone (below)"));
+        // Asked to talk another way, the tone tool, which moves the bar.
+        assert!(text.contains("call set_tone; it changes their phone's setting too"));
+        // Unclear speech: said so, in the phone's language, never answered
+        // with the game.
+        assert!(text.contains("# Unclear audio\n- Only respond to clear speech."));
+        assert!(text.contains("say in a few words, in Hebrew, that you didn't catch it"));
+        assert_eq!(text.matches("didn't catch it").count(), 1);
         let unset = instructions("", &[], None, Spectrum::get().of_voice(Default::default()));
-        assert!(unset.contains("speak the language they speak"));
+        assert!(unset.contains(
+            "# Language\n- No language is set on the player's phone: speak the language they speak."
+        ));
+        assert!(unset.contains(
+            "say in a few words, in the language you were speaking, that you didn't catch it"
+        ));
+        assert!(!unset.contains("SPEAK ONLY"));
+    }
+
+    #[test]
+    fn a_call_answers_what_the_player_said_and_leaves_danger_to_the_watcher() {
+        for level in Spectrum::get().levels() {
+            let text = instructions("", &[], Some("en-US"), level);
+            assert!(
+                text.contains("# Every reply\n- Answer what the player just said, first and only")
+            );
+            assert!(
+                text.contains(
+                    "the player's words first, then the watcher's line, then the reading"
+                )
+            );
+            assert!(text.contains("SPEAK ONLY ENGLISH"));
+            // The brain's "danger first" is the watcher's on a call.
+            assert!(!text.contains("Danger first"), "{}", level.id);
+            assert!(
+                text.contains("6. Danger: the watcher tells you"),
+                "{}",
+                level.id
+            );
+        }
     }
 
     #[test]
