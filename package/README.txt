@@ -100,7 +100,9 @@ How it talks
   one picked on the phone; ask it out loud for another ("talk to me in
   English") and it switches, the phone's picker too. The phone page works
   from a PC's browser as well: there it cleans noise for a microphone
-  across the desk. Talk over it and it stops and goes with what you said. It sees the game
+  across the desk. Talk over it and it stops and goes with what you said;
+  talk to someone else (a friend, your stream) and it stays quiet, as it
+  does for noise, a video or the game's own sound. It sees the game
   through MapleSyrup's vision engine (no pictures of your screen are sent).
   A question that needs working out (exact numbers, a plan, a route) it
   hands to its thinker - Claude while Claude is connected, else a stronger

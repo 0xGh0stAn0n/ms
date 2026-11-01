@@ -1400,6 +1400,7 @@ impl phone::Service for LiveService {
         let (instructions, level) = self.instructions_with(recent, language);
         let mut tools = ai::live::tools(self.toolbox.definitions());
         tools.push(ai::live::think_tool());
+        tools.push(ai::live::quiet_tool());
         let tuning = self.tuning(language, mic);
         let mut call = self
             .live
@@ -1428,6 +1429,10 @@ impl phone::Service for LiveService {
     ) -> (String, Option<ai::Effect>) {
         if name == ai::live::THINK_TOOL {
             return (self.think(arguments, reading), None);
+        }
+        // (The phone answers it itself; a stray one is answered as nothing.)
+        if name == ai::live::QUIET_TOOL {
+            return (String::new(), None);
         }
         let call = ai::openai::Call {
             call_id: String::new(),

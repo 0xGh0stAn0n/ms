@@ -219,7 +219,16 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     screen). The page says where its microphone is (`mic`: a phone near, a
     PC's browser far; `live::Mic` picks the noise reduction), and what the
     player says is written down in the phone's language
-    (`Tuning::language`, `language::code`). The call answers in the
+    (`Tuning::language`, `language::code`). Its instructions open, after
+    who it is, with short sections (OpenAI's voice prompting guide): the
+    language (`LANGUAGE_SET`: every word in the phone's language, the
+    thinker's and the watcher's too; none taken from an accent or a word),
+    every reply (`EVERY_REPLY`: what the player just said, first; the game
+    reading is to see by, not to report) and unclear audio
+    (`UNCLEAR_AUDIO`); on a call, danger is the watcher's to raise
+    (`style::call_rules`, rule 6), the brain keeps "danger first". The
+    bench measured each before it shipped (`tools/bench_variants`,
+    `tools/run-bench.cmd`). The call answers in the
     phone's language whatever is spoken to it; asked for another language
     or another way of talking, it calls `set_language` (one of
     `language::LOCALES`) or `set_tone` (`Effect::Language`,
@@ -227,7 +236,11 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     (`ask_language`, `set_tone`), the phone's picker or bar follows, and
     the page hands the call its instructions again — and, for a language,
     the transcription in it (`retune(tone, language)`; `/api/instructions`
-    carries `transcription`). A question that needs working out it
+    carries `transcription`). What was not said to it (noise, a video, the
+    player talking to someone else) it answers with `QUIET_TOOL` and no
+    words; the page answers that tool itself (`liveQuiet`, its name from
+    `/api/live`'s `quiet`) and asks for no turn, and the log says "kept
+    quiet". A question that needs working out it
     announces like a person and hands over through `THINK_TOOL`: the PC
     (`LiveService::think`) posts it to Claude's board as a `question`
     (`Board::ask`) while a Claude Code session listens and waits

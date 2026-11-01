@@ -200,7 +200,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             STATUS["tone"] = tone(ids[ids.index((body or {}).get("tone"))])
             self._send(200, b'{"ok":true}', "application/json")
         elif path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
-        elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "tone": "savage"}).encode(), "application/json")
+        elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "tone": "savage", "quiet": "wait_for_user"}).encode(), "application/json")
         elif path == "/sdp": self._send(200, b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n", "application/sdp")
         elif path in ("/api/share", "/api/share/delete"):
             # As the PC answers: a code for what went wrong (the page has the
@@ -940,6 +940,18 @@ def live_checks(browser):
     event({"type": "input_audio_buffer.speech_started"})
     wait_for(lambda: readings() == before + 2, 3, "the game seen again was not read with their words")
     event({"type": "input_audio_buffer.speech_stopped"})
+    # What it heard was not said to it: the call says nothing (its quiet
+    # tool), and the page answers that tool itself — no turn asked for, the
+    # PC's tools not run — and the log says it kept quiet.
+    t_quiet = time.time()
+    turns_before = len(sent("response.create"))
+    event({"type": "response.created"})
+    event({"type": "response.done", "response": {"output": [{"type": "function_call", "name": "wait_for_user", "call_id": "q1", "arguments": "{}"}]}})
+    wait_for(lambda: [e for e in sent("conversation.item.create") if e["item"].get("call_id") == "q1"], 3, "the quiet tool was not answered")
+    page.wait_for_timeout(800)
+    assert len(sent("response.create")) == turns_before, "a turn was asked for after keeping quiet"
+    assert not requests_since(t_quiet, "/api/tool"), "the quiet tool went to the PC"
+    assert any("kept quiet" in ((r["body"] or {}).get("text") or "") for r in requests_since(t_quiet, "/api/said")), "the log was not told it kept quiet"
     # On the call, one of MapleSyrup's own lines (the answer to a button) is
     # handed to the call to say, never to the phone's own voice.
     line(1, "reply", "Marked. That's mark 1.")

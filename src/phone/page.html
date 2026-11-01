@@ -2775,7 +2775,7 @@
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
     pending: [], eyesAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
-    stoppedAt: 0, firstSoundTold: true, toldUnseen: false, voiceDb: -100,
+    stoppedAt: 0, firstSoundTold: true, toldUnseen: false, voiceDb: -100, quiet: "",
     // A response under way (since when; 0: none), one asked for while it
     // was, and the level it talks at and API the call was started with.
     responding: 0, respondWanted: false, flushing: false, tone: "", api: "ga" };
@@ -2818,6 +2818,7 @@
       const call = await r.json().catch(() => ({}));
       if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
       liveCall.hint = call.hint || "";
+      liveCall.quiet = call.quiet || "";
       liveCall.tone = call.tone || "";
       liveCall.api = call.api || "ga";
       const track = stream && stream.getAudioTracks()[0];
@@ -3035,8 +3036,22 @@
   // goes on meanwhile, and its answer is said when it comes, not held up
   // by, nor holding up, the quick ones.)
   function liveCalls(response, doneAt) {
-    const calls = ((response && response.output) || []).filter((o) => o && o.type === "function_call");
-    for (const c of calls) liveTool(c, doneAt || Date.now());
+    const output = (response && response.output) || [];
+    const calls = output.filter((o) => o && o.type === "function_call");
+    for (const c of calls) {
+      if (liveCall.quiet && c.name === liveCall.quiet) liveQuiet(c, output);
+      else liveTool(c, doneAt || Date.now());
+    }
+  }
+  // What it heard was not said to it (the player talking to someone else,
+  // a video, the game, noise): it says nothing, and nothing more is asked
+  // of it — its next turn is the player's next words.
+  function liveQuiet(c, output) {
+    liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: c.call_id, output: "ok" } });
+    if (!output.some((o) => o && o.type === "message")) {
+      liveCall.firstSoundTold = true;
+      liveTiming("live: kept quiet: not said to it");
+    }
   }
   async function liveTool(c, doneAt) {
     let output;
