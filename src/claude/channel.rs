@@ -1060,7 +1060,7 @@ mod tests {
         }
         fn status(&self) -> Result<Value, String> {
             Ok(json!({
-                "text": "Now 12:00:00: MapleStory is open, the window in front.\nHP 416/671 (62%), read just now.",
+                "text": "Now 12:00:00: MapleStory is open and in view.\nHP 416/671 (62%), read just now.",
                 "recent": [{"what": "Level up: 16 → 17.", "seconds_ago": 30}],
             }))
         }

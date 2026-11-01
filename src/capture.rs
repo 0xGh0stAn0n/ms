@@ -142,6 +142,15 @@ impl GameCapture {
         })
     }
 
+    /// Whether the frames are the game window's own pixels whatever lies
+    /// over it: they come from the GPU (Windows.Graphics.Capture), not from
+    /// GDI, whose last resort is a copy of the screen where the window is.
+    pub fn own_pixels(&self) -> bool {
+        self.window
+            .as_ref()
+            .is_some_and(|w| w.gpu_unavailable().is_none())
+    }
+
     pub fn capture(&mut self) -> Captured {
         if self.window.is_none() {
             let titles = syrup::capture::list_windows();

@@ -827,9 +827,12 @@ fn presence(so_far: &SoFar) -> Option<String> {
 
 /// What the companion sees, as a few plain lines for the model, and what
 /// a friend in the room would know of the session so far (`so_far`).
-/// `in_front`: whether the game is the window in front — behind another
-/// window it is still read, but the picture is withheld, and the model is
-/// told so rather than told the game is in view and given no picture.
+/// `in_front`: whether the game's screen is being read — its own frames
+/// (Windows.Graphics.Capture), or the game's process has the focus. With
+/// another window in focus and the frames a copy of the screen, the
+/// picture is withheld, and the model is told so rather than told the game
+/// is in view and given no picture (nor told it is hidden: it may well be
+/// in plain sight on the screen).
 pub fn snapshot_with_view(
     obs: Option<&Observation>,
     in_front: bool,
@@ -847,8 +850,8 @@ pub fn snapshot_with_view(
             lines.push("The MapleStory window is open and in view.".to_string())
         }
         Some(GameView::Seen(_)) => lines.push(
-            "The MapleStory window is open, behind another window (you get no picture of it \
-until it is in front)."
+            "The MapleStory window is open, but another window has the focus (you get no \
+picture of it until the game has the focus again)."
                 .to_string(),
         ),
         Some(GameView::Unavailable(why)) => lines.push(format!(
@@ -4202,15 +4205,17 @@ Pot now, you're at 20.",
             snapshot(None, &Progress::default(), &SoFar::default())
                 .starts_with("No MapleStory window is open right now.")
         );
-        // The game behind another window: still read (the bars, the
-        // level), but the picture is withheld, and the model is told so
-        // instead of being told it can see the game and given no picture.
+        // Another window with the focus (the frames a copy of the screen):
+        // the picture is withheld, and the model is told so instead of
+        // being told it can see the game and given no picture — and not
+        // told the game is hidden, which it need not be.
         let behind = snapshot_with_view(Some(&obs), false, &progress, &so_far);
         assert!(
-            behind.starts_with("The MapleStory window is open, behind another window"),
+            behind.starts_with("The MapleStory window is open, but another window has the focus"),
             "{behind}"
         );
         assert!(!behind.contains("in view"), "{behind}");
+        assert!(!behind.contains("behind"), "{behind}");
         assert!(behind.contains("HP 1291 of 1351 (82%), MP about 40%."));
         assert_eq!(
             snapshot_with_view(Some(&obs), true, &progress, &so_far),

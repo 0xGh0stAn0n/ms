@@ -693,6 +693,15 @@ impl Source {
         }))
     }
 
+    /// Whether the frames are the game window's own pixels (see
+    /// [`GameCapture::own_pixels`]).
+    fn own_pixels(&self) -> bool {
+        match self {
+            Source::Game(capture) => capture.own_pixels(),
+            _ => false,
+        }
+    }
+
     /// Where the game's frames come from (see [`GameCapture::path`]).
     fn path(&self) -> Option<String> {
         match self {
@@ -781,7 +790,15 @@ impl Mailbox {
 /// second between tries while the game cannot be captured) into the
 /// mailbox, so the vision thread never waits on the compositor or on GDI,
 /// and a slow frame of vision costs the next capture nothing.
-fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps: f64) {
+/// `own_pixels` says, after each frame, whether it was the window's own
+/// pixels (the GPU path) rather than possibly a copy of the screen.
+fn grab(
+    mut source: Source,
+    mailbox: Arc<Mailbox>,
+    running: Arc<AtomicBool>,
+    own_pixels: Arc<AtomicBool>,
+    fps: f64,
+) {
     let period = Duration::from_secs_f64(1.0 / fps);
     let mut capture_path: Option<String> = None;
     while running.load(Ordering::Relaxed) {
@@ -789,6 +806,9 @@ fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps
         let captured = source.next();
         let took = began.elapsed();
         let seen = matches!(captured, Captured::Frame { .. });
+        if seen {
+            own_pixels.store(source.own_pixels(), Ordering::Relaxed);
+        }
         // Said once, and again if the path changes (the GPU path giving
         // up, say): where the frames are coming from.
         let note = match &captured {
@@ -869,10 +889,11 @@ fn watch(
                 frame_id += 1;
                 let vision_start = Instant::now();
                 // What MapleSyrup learned about this screen replaces the
-                // old HUD reader's guesses. Only while the game is the window
-                // in front: the capture is of the screen where the game is,
-                // so another window over it would be measured (and sent to
-                // OpenAI) instead.
+                // old HUD reader's guesses. Only while the game is in view
+                // (`GameArea::readable`): its own frames, or the game has the
+                // focus — a GDI frame may be a copy of the screen where the
+                // game is, and another window over it would be measured (and
+                // sent to OpenAI) instead.
                 let in_view = in_front.load(Ordering::Relaxed);
                 if in_view {
                     latest.put(Arc::clone(&image));
@@ -1679,8 +1700,8 @@ fn drop_the_attitude(companion: &mut Companion, learning: &ai::Learning, out: &m
 /// What is on screen, as a few lines for a model: what the vision engine
 /// reads, what a friend in the room would know of the session so far, and
 /// what MapleSyrup learned about this screen. `in_front`: whether the game
-/// is the window in front (behind another window the picture is withheld,
-/// and the snapshot says so).
+/// is in view (`GameArea::readable`; while it is not, the picture is
+/// withheld, and the snapshot says so).
 fn snapshot_text(
     companion: &Companion,
     sight: Option<&Arc<Mutex<Sight>>>,
@@ -3572,6 +3593,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // Whether the game is the window in front (a screenshot given on the
     // command line always is).
     let in_front = Arc::new(AtomicBool::new(options.input.is_some()));
+    // Whether the last frame was the game window's own pixels.
+    let own_pixels = Arc::new(AtomicBool::new(false));
     let vision = {
         let (slot, running, fps) = (Arc::clone(&slot), Arc::clone(&running), options.fps);
         let shared = Shared {
@@ -3590,9 +3613,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         let mailbox = Arc::new(Mailbox::default());
         {
             let (mailbox, running) = (Arc::clone(&mailbox), Arc::clone(&running));
+            let own_pixels = Arc::clone(&own_pixels);
             std::thread::Builder::new()
                 .name("capture".into())
-                .spawn(move || grab(source, mailbox, running, fps))
+                .spawn(move || grab(source, mailbox, running, own_pixels, fps))
                 .map_err(|e| e.to_string())?;
         }
         std::thread::Builder::new()
@@ -4965,8 +4989,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 _ => None,
             };
             out.mouth.game_pid = game_area.map(|a| a.pid).filter(|pid| *pid != 0);
+            let own = own_pixels.load(Ordering::Relaxed);
             in_front.store(
-                options.input.is_some() || game_area.is_some_and(|a| a.foreground),
+                options.input.is_some() || game_area.is_some_and(|a| a.readable(own)),
                 Ordering::Relaxed,
             );
         }

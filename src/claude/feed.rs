@@ -15,10 +15,12 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Window {
-    /// Open and the window in front: read every frame.
+    /// Open and read every frame: its own frames (Windows.Graphics.Capture)
+    /// or the game has the focus.
     InFront,
-    /// Open, behind another window: not looked at (another window would be
-    /// read instead).
+    /// Open, another window has the focus and the frames are a copy of the
+    /// screen: not looked at (a window over the game would be read
+    /// instead). It need not be hidden.
     Behind,
     NotOpen,
     /// There, but it could not be captured (minimised…).
@@ -172,9 +174,9 @@ impl Scene {
             "MapleStory"
         };
         lines.push(match self.window {
-            Window::InFront => format!("Now {}: {game} is open, the window in front.", self.clock),
+            Window::InFront => format!("Now {}: {game} is open and in view.", self.clock),
             Window::Behind => format!(
-                "Now {}: {game} is open but behind another window, so the screen isn't being read.",
+                "Now {}: {game} is open but another window has the focus, so the screen isn't being read.",
                 self.clock
             ),
             Window::NotOpen => format!("Now {}: no MapleStory window is open.", self.clock),
@@ -484,13 +486,11 @@ impl Feed {
                         matches!(self.window, Some(Window::Behind | Window::Unavailable));
                     let headline = match scene.window {
                         Window::InFront if was_open => {
-                            "MapleStory is back in front: reading the screen again."
+                            "MapleStory is back in view: reading the screen again."
                         }
-                        Window::InFront => {
-                            "MapleStory is open, the window in front: reading the screen."
-                        }
+                        Window::InFront => "MapleStory is open and in view: reading the screen.",
                         Window::Behind => {
-                            "MapleStory went behind another window: the screen isn't read until it's back in front."
+                            "Another window has the focus: the screen isn't read until MapleStory has it again."
                         }
                         Window::NotOpen => "MapleStory was closed.",
                         Window::Unavailable => "MapleStory can't be captured right now.",
@@ -745,7 +745,7 @@ mod tests {
         assert!(feed.update(&scene(9.0)).is_empty());
         assert_eq!(
             feed.update(&scene(13.5))[0].headline,
-            "MapleStory is back in front: reading the screen again."
+            "MapleStory is back in view: reading the screen again."
         );
         // A game opened after MapleSyrup started was never "back".
         let mut feed = Feed::new();
@@ -753,7 +753,7 @@ mod tests {
         assert!(feed.update(&scene(1.0)).is_empty());
         assert_eq!(
             feed.update(&scene(5.5))[0].headline,
-            "MapleStory is open, the window in front: reading the screen."
+            "MapleStory is open and in view: reading the screen."
         );
     }
 
