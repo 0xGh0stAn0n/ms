@@ -53,22 +53,18 @@ pub fn perceive(
     look: &Look<'_>,
 ) -> Perceived {
     let (frame, frame_id) = (look.frame, look.frame_id);
-    // The HUD's geometry is the sight's to answer once it sees the HUD,
-    // whatever else runs (the scene's detectors, for Claude) — unless
-    // something shows the detector's own picture of it (the preview, which
-    // asks for its OCR too).
+    // With a sight, the HUD's geometry detector runs only for something
+    // that shows its own picture of it (the preview, which asks for its
+    // OCR too): without its OCR, nothing it finds reaches the observation
+    // (a bar it only measured is a guess, left out by
+    // `Observation::from_world`), whether the sight sees the HUD or not,
+    // and whether the game is in view or not — and it costs 1 ms a frame
+    // at 1080p, 4 at 4K.
     let wanted = match &sight {
-        Some(sight)
-            if wanted.hud
-                && !wanted.hud_text
-                && look.in_view
-                && sight.sees_hud(frame.width(), frame.height()) =>
-        {
-            Detectors {
-                hud: false,
-                ..wanted
-            }
-        }
+        Some(_) if wanted.hud && !wanted.hud_text => Detectors {
+            hud: false,
+            ..wanted
+        },
         _ => wanted,
     };
     let world =
@@ -93,7 +89,7 @@ mod tests {
     const NOT_RUN: Option<&str> = Some("not run: nothing is showing it");
 
     #[test]
-    fn the_hud_detector_runs_until_the_sight_sees_the_hud_and_then_rests() {
+    fn the_hud_detector_runs_only_for_the_preview_once_there_is_a_sight() {
         // A status panel the way the sight's own tests draw one: HP 320 of
         // 400 (80%), with the MP and EXP bars beside it.
         let (frame, _) = crate::sight::numbers::tests::hud((320, 400), (675, 1351), 30.0);
@@ -108,14 +104,19 @@ mod tests {
             now,
             in_view: true,
         };
-        // No layout yet: the detector runs (and the sight looks for the
-        // HUD itself).
+        // The game not in view: the detector rests (nothing it measures
+        // would be used), and so does the sight.
+        let hidden = Look {
+            in_view: false,
+            ..look(0)
+        };
+        let unseen = perceive(&mut pipeline, Some(&mut sight), Detectors::HUD, &hidden);
+        assert_eq!(unseen.world.hud.hp.failure_reason.as_deref(), NOT_RUN);
+        assert!(!sight.sees_hud(frame.width(), frame.height()));
+        // No layout yet: the detector rests still, and the sight looks for
+        // the HUD itself.
         let first = perceive(&mut pipeline, Some(&mut sight), Detectors::HUD, &look(1));
-        assert_ne!(
-            first.world.hud.hp.failure_reason.as_deref(),
-            NOT_RUN,
-            "the detector was skipped before the sight saw anything"
-        );
+        assert_eq!(first.world.hud.hp.failure_reason.as_deref(), NOT_RUN);
         assert!(sight.sees_hud(frame.width(), frame.height()));
         // From here the sight's bars answer and the detector rests. The
         // bars say nothing until a reading fits their tracks (where a fill
