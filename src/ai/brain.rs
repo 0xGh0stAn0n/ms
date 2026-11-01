@@ -403,6 +403,10 @@ pub struct Brain {
     /// (`{hp}`…) are filled with when they are said (None: no slots, as in
     /// the tests).
     pub fresh: Option<std::sync::Arc<crate::companion::fresh::Fresh>>,
+    /// The standing plan the intuition's mind keeps (what to suggest when
+    /// asked what to do), as a paragraph for the instructions; None when
+    /// there is none yet ([`Brain::set_plan`]).
+    plan: Option<String>,
 }
 
 /// Who the player is, for the rules: his name as his own file says it (or
@@ -536,7 +540,19 @@ impl Brain {
             here_he: Deck::seeded(session_seed()),
             asked_language: None,
             fresh: None,
+            plan: None,
         }
+    }
+
+    /// The standing plan changed: `text` is the paragraph for the
+    /// instructions (None: no plan).
+    pub fn set_plan(&mut self, text: Option<String>) {
+        self.plan = text.filter(|t| !t.trim().is_empty());
+    }
+
+    /// The standing plan's paragraph, when there is one.
+    pub fn plan(&self) -> Option<&str> {
+        self.plan.as_deref()
     }
 
     /// `text` with its slots (`{hp}`…) filled with the game's values as
@@ -696,12 +712,31 @@ impl Brain {
     /// text can't spell it (the owner's Michael came out as Armani, Miha,
     /// Mako, Miguel and Mikael, and each was learned and used).
     pub fn player_name(&self) -> Option<String> {
-        match &self.learning {
-            Some(learning) => learning.player_name(),
-            None => super::memory::name_in(&self.about_player),
-        }
+        player_name_of(self.learning.as_ref(), &self.about_player)
     }
+}
 
+/// The player's name as [`Brain::player_name`] has it, for code without a
+/// brain.
+fn player_name_of(learning: Option<&Learning>, about_player: &str) -> Option<String> {
+    match learning {
+        Some(learning) => learning.player_name(),
+        None => super::memory::name_in(about_player),
+    }
+}
+
+/// Who MapleSyrup is, as [`Brain::persona`] has it, for a lane that has no
+/// brain of its own (the intuition's mind thinks in the background): the
+/// persona at the bar's level, with the player's name from his own file.
+pub fn persona_for(learning: &Learning) -> String {
+    format!(
+        "{PERSONA}\n\n{}\n\n{MORE}\n{}",
+        style::rules(learning.memory().level()),
+        who_he_is(learning.player_name().as_deref())
+    )
+}
+
+impl Brain {
     /// The language he asked to be answered in, kept until he asks for
     /// another ([`asked_language`]); else `None`.
     pub fn asked_language(&self) -> Option<&'static str> {

@@ -167,7 +167,53 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   `coach::scene` is the frame fingerprint (32×18 cells of brightness, a
   few thousand samples whatever the frame's size) and what a run of them
   says: a cut, a new scene once it settled (not a picture seen in the last
-  `SEEN_FOR`), how much is going on.
+  `SEEN_FOR`), how much is going on. While the intuition (below) is on,
+  the coach keeps its reasons and gives up its idle `Look`
+  (`Coach::set_looks`): two sources of company in the same gaps would be a
+  commentator again.
+- **`intuition/`**: MapleSyrup thinking on its own — thoughts made ahead
+  of the moment and said in calm gaps, its own tastes, its own tunes
+  ([docs/intuition/README.md](intuition/README.md) has the research and
+  the reasons). The main loop builds a `World` per frame (`world.rs`: the
+  game as read, who is talking, since when nobody has) and hands it to
+  `Intuition::observe`, which returns `Act`s: `Think(cue)` for the mind,
+  `Say(thought)`, `Hum(melody)`, `Note(line)`. Inside: `tempo.rs` keeps an
+  intensity in the shape of Left 4 Dead's director (HP lost, a death, the
+  picture cutting and moving push it up; it decays, and the decay waits
+  while HP falls) and reads it as a `Tempo` — away, calm, travel, combat,
+  peak (`tempo.json`); `world::Trail` names the boundaries crossed (a map
+  entered, a level gained, revived, the game back in view, the player back
+  after a long quiet); `hooks.rs` holds the rules (`hooks.json`: a `when`,
+  a `where`, a topic, facts with their sources, notes for the model, odds,
+  once-per-session) and the taste card (`persona.json`: what it loves,
+  likes, shrugs at, and why, in tags); `mind.rs` is a thread of its own
+  with its own client that turns the hooks a boundary fired into
+  thoughts — each a line in the player's language with a 1–5 rating of how
+  much it deserves saying, after the model weighed for and against — and
+  keeps the standing plan (`Plan`: goal, next, why), which the
+  conversation gets as `Brain::set_plan` so "what now?" is answered from
+  it; `thoughts.rs` is the pool they wait in, each on its `Basis` (the map,
+  the level, alive, how tense the game may be, when it was made, how long
+  it keeps): a thought whose basis broke is dropped unsaid, with the
+  reason in the log; `director.rs` decides, from numbers and the player's
+  dial (`initiative.json`: quiet, normal, talkative — thresholds, gaps, a
+  cap per ten minutes), whether a thought is said this frame: never while
+  anyone talks or within `min_gap_after_anyone_spoke_s`, never at a tempo
+  whose penalty is silence (combat, peak, away), a bonus for
+  `boundary_window_s` after a boundary, a wish that grows a little with
+  silence and falls to a third right after its topic was spoken (the topics'
+  cooldowns), once-per-session hooks said once; a thought let pass without
+  a word within `response_window_s` stretches every gap by
+  `ignored_backoff_factor` (an answer brings them back; "stop coaching"
+  sets the longest). `vocal.rs` hums `melodies.json` (every melody
+  MapleSyrup's own and marked so: a hummed game theme is a performance of
+  Nexon's composition) through the worker's mouth lane (`Job::Play`), at
+  the voice's 24 kHz. Everything is tested by replaying frames; the one
+  model call is `mind::think`, with `compose`/`parse` tested without a
+  model. The session log's `[intuition]` lines say what was thought, what
+  was said and why, what was dropped and why, and at the end how many
+  thoughts were answered, let pass or shushed — the measure to tune the
+  data by.
 - **`ai/`**: the model clients, the teaching loop, the tools, the coach's
   look (`coach()`). The worker is two lanes (`spawn_brains`):
   `Worker::send` routes `Job::Speak`, MapleSyrup's own lines, to the mouth

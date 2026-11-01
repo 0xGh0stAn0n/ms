@@ -599,6 +599,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::Command { word }) => panic!("command: {word}"),
             Ok(Done::Warn { what, .. }) => panic!("warn: {what}"),
             Ok(Done::Tone { id }) => panic!("tone: {id}"),
+            Ok(Done::Initiative { id }) => panic!("initiative: {id}"),
             Ok(Done::Language { locale }) => panic!("language: {locale}"),
             Ok(Done::LookUp { question, .. }) => panic!("look-up: {question}"),
             Ok(Done::Coached { label, .. }) => panic!("coached: {label}"),
@@ -1335,6 +1336,130 @@ fn its_own_lines_are_translated_shown_and_spoken() {
 }
 
 #[test]
+fn a_hum_is_handed_over_as_sound_with_its_name_first_and_no_model_in_the_way() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let melody = ms::intuition::vocal::Melodies::get()
+        .named("morning-leaf")
+        .unwrap();
+    let samples = ms::intuition::vocal::hum(melody);
+    let id = worker.send(Job::Play {
+        samples: samples.clone(),
+        kind: ms::companion::Kind::Info,
+        label: melody.title.clone(),
+    });
+    let mut heard = 0usize;
+    let mut label = None;
+    let mut ended = false;
+    while !ended {
+        match next_done(&worker, Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id: got,
+                text,
+                kind,
+                samples: piece,
+                start,
+                end,
+                ..
+            }) => {
+                assert_eq!(got, id);
+                assert_eq!(kind, ms::companion::Kind::Info);
+                if start {
+                    label = Some(text);
+                }
+                if end {
+                    ended = true;
+                }
+                heard += piece.len();
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(heard, samples.len());
+    assert_eq!(label.as_deref(), Some("Morning Leaf"));
+    // Then nothing more (the job's end itself, `Voiced`, is passed over by
+    // `next_done`), and its own sound asked nothing of any model.
+    assert!(next_done(&worker, Duration::from_millis(300)).is_err());
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_standing_plan_goes_into_the_replys_instructions_after_what_it_learned() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let plan = ms::intuition::mind::Plan {
+        goal: "level 30".into(),
+        next: "the Kerning City party quest".into(),
+        why: "fast EXP at this level".into(),
+        map: Some("Henesys".into()),
+        level: Some(24),
+        made_at: 0.0,
+    };
+    worker.send(Job::Plan {
+        text: Some(plan.prompt()),
+    });
+    let id = worker.send(Job::Converse {
+        heard: "what should I do now?".into(),
+        snapshot: "Level 24.".into(),
+        facts: ms::ai::brain::Facts::default(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let (reply, _, _) = outcome(&worker, id);
+    assert!(reply.is_some());
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    let instructions = asked["body"]["instructions"].as_str().unwrap().to_string();
+    assert!(
+        instructions.contains("next — the Kerning City party quest"),
+        "{instructions}"
+    );
+    // The plan comes after the persona, so the cached part stays cached.
+    assert!(
+        instructions.find("You are MapleSyrup").unwrap() < instructions.find("next — ").unwrap()
+    );
+    // Dropped, it is gone from the next reply.
+    worker.send(Job::Plan { text: None });
+    let before = seen.lock().unwrap().len();
+    let id = worker.send(Job::Converse {
+        heard: "and now?".into(),
+        snapshot: "Level 24.".into(),
+        facts: ms::ai::brain::Facts::default(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let _ = outcome(&worker, id);
+    let requests = seen.lock().unwrap();
+    let again = requests[before..]
+        .iter()
+        .find(|r| r["path"] == "/v1/responses")
+        .unwrap();
+    assert!(
+        !again["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("next — ")
+    );
+}
+
+#[test]
 fn an_alerts_line_is_not_called_off_with_the_rest() {
     if !have_curl() {
         return;
@@ -1919,6 +2044,7 @@ fn describe(done: Result<Done, std::sync::mpsc::RecvTimeoutError>) -> String {
         Ok(Done::Command { word }) => format!("command: {word}"),
         Ok(Done::Warn { what, .. }) => format!("warn: {what}"),
         Ok(Done::Tone { id }) => format!("tone: {id}"),
+        Ok(Done::Initiative { id }) => format!("initiative: {id}"),
         Ok(Done::Language { locale }) => format!("language: {locale}"),
         Ok(Done::LookUp { question, .. }) => format!("look-up: {question}"),
         Ok(Done::Coached { label, text, .. }) => format!("coached: {label}: {text:?}"),

@@ -370,6 +370,17 @@ pub enum Job {
     /// spoken, and kept in the conversation (with `heard`, what it answers,
     /// when it answers something).
     Say { heard: Option<String>, text: String },
+    /// Play sound MapleSyrup made itself (a hum: `intuition::vocal`), 24 kHz
+    /// mono, on the mouth lane like one of its own lines: `label` is what
+    /// the phone shows for it.
+    Play {
+        samples: Vec<i16>,
+        kind: crate::companion::Kind,
+        label: String,
+    },
+    /// The standing plan changed (None: there is none): the conversation
+    /// suggests from it when asked what to do ([`Brain::set_plan`]).
+    Plan { text: Option<String> },
     /// Nobody said anything: the coach is watching the game and asks
     /// whether there is one line worth saying now (`reason`: why it asks,
     /// `label`: the same in a few words for the log), given what is on
@@ -446,6 +457,9 @@ pub enum Done {
     Tone { id: String },
     /// The player asked for another language: theirs from now on.
     Language { locale: String },
+    /// The player asked it to speak up on its own more or less: the dial
+    /// moves to this level.
+    Initiative { id: String },
     /// Look `question` up in the background: `said` was the quick answer,
     /// `asked` whether the player asked for the look-up.
     LookUp {
@@ -530,7 +544,7 @@ impl Worker {
             }
         }
         let _ = match job {
-            Job::Speak { .. } => self.lines.send((id, job)).is_ok(),
+            Job::Speak { .. } | Job::Play { .. } => self.lines.send((id, job)).is_ok(),
             job => self.jobs.send(Work::Job(id, job)).is_ok(),
         };
         id
@@ -655,6 +669,19 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 // translated once.
                 let mut translations = Translations::default();
                 while let Ok((id, job)) = lines_rx.recv() {
+                    if let Job::Play {
+                        samples,
+                        kind,
+                        label,
+                    } = job
+                    {
+                        let stop = Stop::new(Arc::clone(&marks), id);
+                        if !stop.stopped() {
+                            play_sound(&floor, id, &stop, &samples, kind, &label, &tx);
+                        }
+                        let _ = tx.send(Done::Voiced { id });
+                        continue;
+                    }
                     let Job::Speak {
                         text,
                         language,
@@ -796,6 +823,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             &mut |said| brain.watched(label_of(kind), said),
                         ),
                         Job::Cut { heard } => brain.cut_short(&heard),
+                        Job::Plan { text } => brain.set_plan(text),
+                        // (A sound goes to the mouth lane: `Worker::send`
+                        // routes it there. One that gets here is played all
+                        // the same.)
+                        Job::Play {
+                            samples,
+                            kind,
+                            label,
+                        } => play_sound(&floor, id, &stop, &samples, kind, &label, &tx),
                         Job::Greet { language } => greet(
                             fast.as_ref().unwrap_or(openai),
                             mouth,
@@ -1180,6 +1216,64 @@ fn speak_line(
     }
 }
 
+/// How long each piece of a sound handed over is, in samples (a tenth of
+/// a second at 24 kHz): the main loop plays as it comes, as it does a line.
+const SOUND_PIECE: usize = 2_400;
+
+/// Play `samples` (24 kHz mono) as one of MapleSyrup's own sounds — a hum —
+/// handed over a piece at a time like a line's speech, one at a time across
+/// both lanes ([`Mouth::floor`]). `label` goes with the first piece, as a
+/// line's words would.
+fn play_sound(
+    floor: &std::sync::Mutex<()>,
+    id: u64,
+    stop: &Stop,
+    samples: &[i16],
+    kind: Kind,
+    label: &str,
+    tx: &Sender<Done>,
+) {
+    if samples.is_empty() {
+        return;
+    }
+    let _floor = floor.lock().unwrap_or_else(|e| e.into_inner());
+    if stop.stopped() {
+        return;
+    }
+    let started = Instant::now();
+    let mut first = true;
+    for piece in samples.chunks(SOUND_PIECE) {
+        if stop.stopped() {
+            break;
+        }
+        let _ = tx.send(Done::Audio {
+            id,
+            kind,
+            text: if first {
+                label.to_string()
+            } else {
+                String::new()
+            },
+            samples: piece.to_vec(),
+            after: started.elapsed(),
+            first: false,
+            start: first,
+            end: false,
+        });
+        first = false;
+    }
+    let _ = tx.send(Done::Audio {
+        id,
+        kind,
+        text: String::new(),
+        samples: Vec::new(),
+        after: started.elapsed(),
+        first: false,
+        start: false,
+        end: true,
+    });
+}
+
 /// How the model is told it can see the game.
 const EYES_GUIDE: &str = "\n\nWith the player's words comes what your vision engine reads off the game right now \
 (not said by the player): level, job and name, HP, MP and EXP with how old each number is, the map, what moves on \
@@ -1514,6 +1608,10 @@ fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Send
         instructions.push('\n');
         instructions.push_str(&learned);
     }
+    if let Some(plan) = brain.plan() {
+        instructions.push_str("\n\n");
+        instructions.push_str(plan);
+    }
     let mut text = format!(
         "[Not the player: your game watcher. Nobody said anything.]\nThe game right now, read by your vision \
 engine:\n{snapshot}\n\n{reason}"
@@ -1779,6 +1877,13 @@ fn converse<'a>(
         instructions.push('\n');
         instructions.push_str(&learned);
     }
+    // The standing plan, thought through in the background: what it
+    // suggests when asked what to do (after what seldom changes, so the
+    // cached part stays cached).
+    if let Some(plan) = brain.plan() {
+        instructions.push_str("\n\n");
+        instructions.push_str(plan);
+    }
     // The language of the answer is his sentence's (or the one he asked
     // for), to a man.
     let note = brain::answer_note(&brain.language_for(&heard, language));
@@ -1987,6 +2092,9 @@ fn converse<'a>(
                     }
                     Some(Effect::Language(locale)) => {
                         let _ = tx.send(Done::Language { locale });
+                    }
+                    Some(Effect::Initiative(id)) => {
+                        let _ = tx.send(Done::Initiative { id });
                     }
                     Some(Effect::LookUp {
                         question,

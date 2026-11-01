@@ -610,6 +610,12 @@ enum Scare {
 pub struct Coach {
     /// Coaching is on: it may speak up on its own.
     pub on: bool,
+    /// The looks at nothing in particular are on. Off while the intuition
+    /// has thoughts of its own ([`crate::intuition`]): two sources of
+    /// company in the same gaps would be a commentator again. The reasons
+    /// (a close call, a streak, a new scene, a level-up, a stall) are not
+    /// held by it.
+    looks: bool,
     /// When anyone last said anything.
     quiet_since: f64,
     last_consult: f64,
@@ -666,6 +672,7 @@ impl Coach {
     pub fn new(on: bool) -> Self {
         Self {
             on,
+            looks: true,
             quiet_since: f64::NEG_INFINITY,
             last_consult: f64::NEG_INFINITY,
             last_new_scene: f64::NEG_INFINITY,
@@ -816,7 +823,12 @@ impl Coach {
         // A look at nothing in particular: put off by as long as anyone
         // talked lately (see TALK_WINDOW).
         let wait = self.look_every + self.talked_lately();
-        if quiet && !g.held && now - self.last_consult >= wait && self.activity > IDLE_ACTIVITY {
+        if self.looks
+            && quiet
+            && !g.held
+            && now - self.last_consult >= wait
+            && self.activity > IDLE_ACTIVITY
+        {
             return Some(self.consult(Reason::Look, now));
         }
         None
@@ -1002,6 +1014,12 @@ impl Coach {
     /// Whether a consult is under way.
     pub fn consulting(&self) -> bool {
         self.consulting
+    }
+
+    /// Whether the looks at nothing in particular are on (see
+    /// [`Coach::looks`]).
+    pub fn set_looks(&mut self, looks: bool) {
+        self.looks = looks;
     }
 
     /// Turn coaching on or off (off drops what was waiting).

@@ -20,6 +20,7 @@
 mod recording;
 mod selftest;
 
+use std::collections::VecDeque;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2230,6 +2231,57 @@ fn set_coaching(
     );
 }
 
+/// The intuition follows the coach's switch: off with "stop coaching" (a
+/// thought waiting for an answer counts as told to stop), on with "coach
+/// me" — when there is a mind to think with. The coach's idle looks go the
+/// other way: off while the intuition is on.
+fn set_intuition(
+    intuition: &mut ms::intuition::Intuition,
+    coach: &mut ms::coach::Coach,
+    has_mind: bool,
+    out: &mut Outputs,
+    on: bool,
+) {
+    let on = on && has_mind;
+    if !on && intuition.on && intuition.director.awaiting().is_some() {
+        intuition.told_to_stop();
+    }
+    intuition.set_on(on);
+    coach.set_looks(!on);
+    out.session.line(
+        "intuition",
+        if on {
+            "thoughts of its own: on"
+        } else {
+            "thoughts of its own: off"
+        },
+    );
+}
+
+/// The dial of how much it speaks up on its own moves to the level named
+/// `id` (one of `intuition/initiative.json`'s), for good.
+fn set_initiative(
+    id: &str,
+    learning: &ai::Learning,
+    intuition: &mut ms::intuition::Intuition,
+    out: &mut Outputs,
+) {
+    if !intuition.director.set_level(id) {
+        out.session
+            .line("intuition", &format!("no such level of the dial: {id}"));
+        return;
+    }
+    let level = intuition.director.level().id.clone();
+    {
+        let mut memory = learning.memory();
+        memory.initiative = Some(level.clone());
+        memory.save();
+    }
+    let line = format!("initiative: {level}");
+    out.session.line("intuition", &line);
+    out.push(Kind::Info, line);
+}
+
 /// The bar of how it talks, for the phone: its levels, where the player set
 /// it, and the level it talks at now.
 fn tone_status(learning: &ai::Learning) -> serde_json::Value {
@@ -4216,6 +4268,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         ai::talkover::Listener,
         mpsc::Receiver<ai::talkover::Written>,
     )> = None;
+    // The intuition's mind: thinks in the background with a client of its
+    // own, when there is a key (none: no thoughts of its own).
+    let mut mind: Option<ms::intuition::mind::Mind> = None;
     let worker = match openai_key(&options, &settings_dir) {
         Some(key) => {
             println!("Connecting to OpenAI…");
@@ -4317,6 +4372,15 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             options.model.as_deref(),
                         )),
                         Some(learning.clone()),
+                    ));
+                    mind = Some(ms::intuition::mind::Mind::spawn(
+                        Arc::new(OpenAi::new(
+                            &key,
+                            &options.openai_base,
+                            &options.voice_name,
+                            options.model.as_deref(),
+                        )),
+                        learning.clone(),
                     ));
                     talkovers = Some(ai::talkover::Listener::new(Arc::new(OpenAi::new(
                         &key,
@@ -4702,6 +4766,22 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // The coach: MapleSyrup speaking up on its own (off when the player
     // asked for that, for good).
     let mut coach = ms::coach::Coach::new(learning.memory().coach.unwrap_or(true));
+    // The intuition: thoughts of its own, made in the background and said
+    // in calm gaps (on with the coach; its dial is the player's). While it
+    // is on, the coach keeps its reasons and gives up its idle looks.
+    let mut intuition = ms::intuition::Intuition::new(
+        coach.on && mind.is_some(),
+        learning.memory().initiative.as_deref(),
+        ai::brain::session_seed(),
+    );
+    coach.set_looks(!intuition.on);
+    // The standing plan the mind keeps, and the player's last few sentences
+    // (for the mind to think in the same conversation).
+    let mut plan: Option<ms::intuition::mind::Plan> = None;
+    let mut lately: VecDeque<String> = VecDeque::new();
+    // When anyone last said anything (the player, a reply, an alert), for
+    // the intuition's gaps.
+    let mut anyone_spoke_at = f64::NEG_INFINITY;
     // When the player was last heard (talking, or talked; None: not yet),
     // and the last level-up the companion announced: the coach keeps out of
     // the way.
@@ -4822,6 +4902,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 .any(|a| matches!(a, Action::Say(s) if s.speak && s.kind != Kind::Heard))
             {
                 coach.someone_spoke(now);
+                anyone_spoke_at = now;
             }
             out.apply(actions, &mut companion, latest_image.clone());
             if companion.last_level_up() > level_up_seen {
@@ -4831,6 +4912,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             // The coach: is it time for a look at the game, and why? (Not
             // while Claude does the talking: it gets the game itself; nor
             // in the background, where nobody would hear it.)
+            // (A thought for the live call to say, told once the worker is
+            // let go of.)
+            let mut for_the_call: Vec<String> = Vec::new();
             if !out.claude
                 && !options.background
                 && let Some(worker) = &out.mouth.ai
@@ -4885,6 +4969,162 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         speak: !out.live,
                     }));
                 }
+                // The intuition: the moment as numbers, then whatever it
+                // asks for — a cue for the mind, a thought to say, a hum.
+                let so_far = companion.so_far();
+                let place = sight.as_ref().and_then(|s| {
+                    s.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .place()
+                        .map(|(name, age)| ms::intuition::Place {
+                            name,
+                            age_s: age.as_secs_f64(),
+                        })
+                });
+                let classic = sight.as_ref().is_some_and(|s| {
+                    s.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .numbers
+                        .classic()
+                        == Some(true)
+                });
+                let world = ms::intuition::World {
+                    now,
+                    seen: in_view && tick.obs.game.is_seen(),
+                    place,
+                    level: companion.level().or(tick.obs.level),
+                    job: tick.obs.job.clone(),
+                    hp: tick.obs.hp.map(|g| g.percent),
+                    mp: tick.obs.mp.map(|g| g.percent),
+                    exp: tick.obs.exp.map(|g| g.percent),
+                    dead: companion.dead(),
+                    activity: tick.scene.as_ref().map(|s| s.activity).unwrap_or(0.0),
+                    scene_cut: tick.scene.as_ref().is_some_and(|s| s.new_scene),
+                    talking: talking || coach.consulting(),
+                    since_player_spoke: so_far.since_player_spoke,
+                    since_anyone_spoke: now - anyone_spoke_at,
+                    held: companion.alerts_held(now),
+                    muted: companion.muted(),
+                    session_s: so_far.seconds,
+                    classic,
+                    deaths_lately: so_far.deaths,
+                };
+                for act in intuition.observe(&world) {
+                    match act {
+                        ms::intuition::Act::Think(cue) => {
+                            if let Some(mind) = &mind {
+                                out.session.line(
+                                    "intuition",
+                                    &format!(
+                                        "thinking: {} ({}){}",
+                                        cue.trigger.word(),
+                                        cue.hooks.join(", "),
+                                        if cue.plan { ", and the plan" } else { "" }
+                                    ),
+                                );
+                                mind.think(
+                                    cue,
+                                    ms::intuition::mind::Context {
+                                        language: player_language.clone(),
+                                        snapshot: snapshot_text(
+                                            &companion,
+                                            sight.as_ref(),
+                                            in_view,
+                                        ),
+                                        plan: plan.clone(),
+                                        lately: lately.iter().cloned().collect(),
+                                    },
+                                );
+                            }
+                        }
+                        ms::intuition::Act::Say(thought) => {
+                            out.session.line(
+                                "intuition",
+                                &format!(
+                                    "says ({}, {}, {:.1}/5, tempo {}): {}",
+                                    thought.hook,
+                                    thought.kind.word(),
+                                    thought.rating,
+                                    intuition.tempo().word(),
+                                    thought.text
+                                ),
+                            );
+                            coach.someone_spoke(now);
+                            anyone_spoke_at = now;
+                            if out.live {
+                                // The call says it, as a thought of its own.
+                                for_the_call.push(thought.text);
+                            } else {
+                                worker.send(Job::Say {
+                                    heard: None,
+                                    text: thought.text,
+                                });
+                            }
+                        }
+                        ms::intuition::Act::Hum(melody) => {
+                            // (On a call the call has the voice; the hum
+                            // waits for the next session at the PC.)
+                            if !out.live
+                                && let Some(melody) =
+                                    ms::intuition::vocal::Melodies::get().named(&melody)
+                            {
+                                out.session
+                                    .line("intuition", &format!("hums: {}", melody.title));
+                                worker.send(Job::Play {
+                                    samples: ms::intuition::vocal::hum(melody),
+                                    kind: Kind::Info,
+                                    label: melody.title.clone(),
+                                });
+                            }
+                        }
+                        ms::intuition::Act::Note(line) => out.session.line("intuition", &line),
+                    }
+                }
+                // What the mind came to: thoughts for the pool, the plan for
+                // the conversation.
+                if let Some(mind) = &mind {
+                    for thinking in mind.drain() {
+                        match thinking {
+                            ms::intuition::mind::Thinking::Thoughts(thoughts) => {
+                                for thought in thoughts {
+                                    out.session.line(
+                                        "intuition",
+                                        &format!(
+                                            "thought ({}, {}, {:.1}/5): {}",
+                                            thought.hook,
+                                            thought.kind.word(),
+                                            thought.rating,
+                                            thought.text
+                                        ),
+                                    );
+                                    intuition.thought(thought);
+                                }
+                            }
+                            ms::intuition::mind::Thinking::Plan(new_plan) => {
+                                if plan.as_ref() != Some(&new_plan) {
+                                    out.session.line(
+                                        "intuition",
+                                        &format!(
+                                            "plan: {} — {} ({})",
+                                            new_plan.goal, new_plan.next, new_plan.why
+                                        ),
+                                    );
+                                    worker.send(Job::Plan {
+                                        text: Some(new_plan.prompt()),
+                                    });
+                                }
+                                plan = Some(new_plan);
+                            }
+                            ms::intuition::mind::Thinking::Failed(why) => {
+                                out.session
+                                    .line("intuition", &format!("couldn't think ({why})"));
+                            }
+                        }
+                    }
+                }
+            }
+            for text in for_the_call {
+                out.tell(Kind::Info, &text, true, &mut companion);
             }
             // Died without a warning: HP warnings come sooner now, for good.
             if companion.settings.hp_low != warn_at.0 {
@@ -5074,6 +5314,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                         player_heard = Some(Instant::now());
                         coach.someone_spoke(now);
+                        anyone_spoke_at = now;
+                        // The player's words answer the last thought, or
+                        // are the first since it was let pass.
+                        if let Some(outcome) = intuition.player_spoke(now) {
+                            out.session
+                                .line("intuition", &format!("thought {outcome:?}").to_lowercase());
+                        }
+                        lately.push_back(heard.clone());
+                        while lately.len() > 6 {
+                            lately.pop_front();
+                        }
                         // A look under way gives way to the player.
                         if let (Some(id), Some(worker)) = (coach_job.take(), &out.mouth.ai) {
                             worker.cancel(id);
@@ -5245,6 +5496,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         if let Some(on) = commands::coaching_request(&text) {
                             out.show(Kind::Heard, &text);
                             set_coaching(&mut coach, &learning, &mut out, on);
+                            set_intuition(&mut intuition, &mut coach, mind.is_some(), &mut out, on);
                             continue;
                         }
                         if commands::tone_complaint(&text) {
@@ -5454,6 +5706,19 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     Inbound::Said { who, text } => {
                         // On a live call: shown here and kept in the log (the
                         // phone shows it itself).
+                        anyone_spoke_at = now;
+                        if who == "player" {
+                            if let Some(outcome) = intuition.player_spoke(now) {
+                                out.session.line(
+                                    "intuition",
+                                    &format!("thought {outcome:?}").to_lowercase(),
+                                );
+                            }
+                            lately.push_back(text.clone());
+                            while lately.len() > 6 {
+                                lately.pop_front();
+                            }
+                        }
                         coach.someone_spoke(now);
                         let kind = if who == "player" {
                             player_heard = Some(Instant::now());
@@ -5480,6 +5745,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 }
                             } else if let Some(on) = commands::coaching_request(&text) {
                                 set_coaching(&mut coach, &learning, &mut out, on);
+                                set_intuition(
+                                    &mut intuition,
+                                    &mut coach,
+                                    mind.is_some(),
+                                    &mut out,
+                                    on,
+                                );
                             } else if commands::tone_complaint(&text) {
                                 drop_the_attitude(&mut companion, &learning, &mut out);
                                 tone_heard.heard(learning.memory().level());
@@ -5601,6 +5873,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         set_tone(&id, &learning, &mut companion, &mut out);
                         memory_checked = None;
                     }
+                    Inbound::Initiative(id) => {
+                        set_initiative(&id, &learning, &mut intuition, &mut out);
+                    }
                     Inbound::Record(true) => recording.start(&mut out),
                     Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),
                     Inbound::Effect(effect) => match effect {
@@ -5633,6 +5908,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         {
                             let on = word == ai::tools::COACH_ON;
                             set_coaching(&mut coach, &learning, &mut out, on);
+                            set_intuition(&mut intuition, &mut coach, mind.is_some(), &mut out, on);
                         }
                         ai::Effect::Command(word) if word == ai::tools::RECORD_ON => {
                             recording.start(&mut out)
@@ -5657,6 +5933,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         ai::Effect::Tone(id) => {
                             set_tone(&id, &learning, &mut companion, &mut out);
                             memory_checked = None;
+                        }
+                        ai::Effect::Initiative(id) => {
+                            set_initiative(&id, &learning, &mut intuition, &mut out);
                         }
                         ai::Effect::Language(locale) => {
                             out.ask_language(&locale, &mut player_language, &mut companion, false);
@@ -5850,6 +6129,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     Inbound::Coach(on) => {
                         if on != coach.on {
                             set_coaching(&mut coach, &learning, &mut out, on);
+                            set_intuition(&mut intuition, &mut coach, mind.is_some(), &mut out, on);
                         }
                     }
                     Inbound::Listen(always) => {
@@ -6075,6 +6355,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     turns.replied(id);
                     companion.remember_spoken(now, &text);
                     coach.someone_spoke(now);
+                    anyone_spoke_at = now;
                     out.show(Kind::Reply, &text);
                     out.session
                         .line("timing", &format!("reply in {:.1} s", took.as_secs_f64()));
@@ -6166,6 +6447,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     set_tone(&id, &learning, &mut companion, &mut out);
                     memory_checked = None;
                 }
+                // Asked to speak up more or less on its own: the dial moves,
+                // and stays there.
+                Done::Initiative { id } => {
+                    set_initiative(&id, &learning, &mut intuition, &mut out);
+                }
                 Done::Language { locale } => {
                     out.ask_language(&locale, &mut player_language, &mut companion, false);
                 }
@@ -6174,6 +6460,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 {
                     let on = word == ai::tools::COACH_ON;
                     set_coaching(&mut coach, &learning, &mut out, on);
+                    set_intuition(&mut intuition, &mut coach, mind.is_some(), &mut out, on);
                 }
                 Done::Rewrite { instruction } => {
                     out.session.line(
@@ -6514,6 +6801,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "always_listen": companion.settings.always_listen,
                     // Whether it speaks up on its own (the coach).
                     "coach": coach.on,
+                    // Its thoughts of its own: the dial's levels, quietest
+                    // first, and where it stands.
+                    "initiative": {
+                        "levels": ms::intuition::director::Initiative::get().ids(),
+                        "now": intuition.director.level().id,
+                        "on": intuition.on,
+                    },
                     // This version, and whether a newer one is on its way.
                     "update": updater.status().to_json(),
                     // Whether it rewrites itself here, and how that is going.
@@ -6745,6 +7039,22 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     }
     recording.finish();
     stats.finish(&coach, player_language.as_deref());
+    // What the thoughts of its own came to, for the log (the measure the
+    // research asks for: how many were answered, let pass, or shushed).
+    {
+        let s = intuition.director.stats;
+        out.session.line(
+            "intuition",
+            &format!(
+                "said {} thoughts: {} answered, {} let pass, {} shushed; dial {}",
+                s.spoken,
+                s.engaged,
+                s.ignored,
+                s.rejected,
+                intuition.director.level().id
+            ),
+        );
+    }
     let progress = companion.progress();
     println!(
         "\nStopped after {}. {} mark{} saved in {}",

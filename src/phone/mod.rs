@@ -182,6 +182,9 @@ pub enum Inbound {
     /// Where the player set the bar of how MapleSyrup talks to them: a
     /// level's name (`companion/spectrum.json`).
     Tone(String),
+    /// The dial of how much it speaks up on its own was set to this level
+    /// (one of `intuition/initiative.json`'s).
+    Initiative(String),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
     /// About updates: look now, install what is staged, or whether to
@@ -1192,6 +1195,22 @@ impl Hub {
                     None => Response::json(
                         400,
                         &json!({"error": "unknown_tone", "tones": spectrum.ids()}),
+                    ),
+                }
+            }
+            ("POST", "/api/initiative") => {
+                let dial = crate::intuition::director::Initiative::get();
+                match text_field("level").and_then(|id| dial.index(&id)) {
+                    Some(at) => {
+                        let id = dial.level(at).id.clone();
+                        let mut state = self.lock();
+                        state.inbox.retain(|i| !matches!(i, Inbound::Initiative(_)));
+                        state.inbox.push(Inbound::Initiative(id.clone()));
+                        Response::json(200, &json!({"ok": true, "initiative": id}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": "unknown_level", "levels": dial.ids()}),
                     ),
                 }
             }

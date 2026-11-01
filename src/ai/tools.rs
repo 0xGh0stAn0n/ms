@@ -67,6 +67,10 @@ pub enum Effect {
     /// [`super::language::LOCALES`]), as they asked: theirs, as if picked
     /// on the phone.
     Language(String),
+    /// Move the dial of how much it speaks up on its own (quiet, normal,
+    /// talkative: `intuition/initiative.json`) to the level with this id,
+    /// as they asked.
+    Initiative(String),
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -221,6 +225,14 @@ level, when they ask you to talk to them another way, in any words and any langu
 to roast them, no filter). No level swears.",
                 json!({"tone": {"type": "string", "enum": crate::companion::spectrum::Spectrum::get().ids(),
                                 "description": "The level, gentlest first."}}),
+            ),
+            function(
+                "set_initiative",
+                "Move the dial of how much you speak up on your own — thoughts, remarks, ideas of what to do next — \
+when they ask for more of that or less of it (\"talk more\", \"less chatter\", \"you can speak up\"), in any words \
+and any language. Not for stopping altogether: that is set_coaching.",
+                json!({"level": {"type": "string", "enum": crate::intuition::director::Initiative::get().ids(),
+                                 "description": "The level, quietest first."}}),
             ),
             function(
                 "set_language",
@@ -534,6 +546,22 @@ and installs the next time MapleSyrup starts. Tell the player it takes a few min
                     (
                         format!("The bar is moving to {tone}: talk that way from your next words."),
                         Some(Effect::Tone(tone)),
+                    )
+                } else {
+                    ("No such level.".into(), None)
+                }
+            }
+            "set_initiative" => {
+                let level = text("level");
+                if crate::intuition::director::Initiative::get()
+                    .ids()
+                    .contains(&level.as_str())
+                {
+                    (
+                        format!(
+                            "The dial is moving to {level}: speak up on your own that much from now on."
+                        ),
+                        Some(Effect::Initiative(level)),
                     )
                 } else {
                     ("No such level.".into(), None)

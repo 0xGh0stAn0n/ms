@@ -22,6 +22,8 @@
 //!   player turns it on — the same numbers made ready to share with partners; nothing is sent.
 //! - **claude**: Claude, live — MapleSyrup as a channel into a Claude Code session: everything it
 //!   reads pushed as it changes, what the player says passed on as said, Claude's words spoken.
+//! - **intuition**: MapleSyrup thinking on its own while the player plays — thoughts made ahead
+//!   of the moment, a director that decides if and when one is said, its own tastes, its own tunes.
 
 pub mod ai;
 pub mod app;
@@ -32,6 +34,7 @@ pub mod companion;
 pub mod config;
 pub mod game_state;
 pub mod hud;
+pub mod intuition;
 pub mod knowledge;
 pub mod logging;
 pub mod metrics;

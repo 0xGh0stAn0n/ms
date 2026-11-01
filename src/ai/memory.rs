@@ -228,6 +228,18 @@ pub struct Memory {
     /// Whether it speaks up on its own while they play (the coach); None
     /// is the usual, on.
     pub coach: Option<bool>,
+    /// How much it speaks up on its own with thoughts of its own — the
+    /// dial's level in `intuition/initiative.json`; None is where the dial
+    /// starts.
+    pub initiative: Option<String>,
+    /// What the player likes and dislikes in the game, in their words
+    /// ("the player loves Ellinia's music"): what MapleSyrup's own taste is
+    /// weighed against, and what it brings up again ([`MOST_TASTES`]).
+    pub tastes: Vec<String>,
+    /// Moments they shared, dated by the session ("2026-11-01: first
+    /// Kerning City PQ together, two levels in half an hour"), newest last
+    /// ([`MOST_MOMENTS`]).
+    pub moments: Vec<String>,
     /// Whether it updates itself when a new version is out; None is the
     /// usual, on.
     pub updates: Option<bool>,
@@ -243,6 +255,9 @@ pub struct Memory {
 
 /// At most this many forgotten things are kept, to keep them forgotten.
 const MOST_FORGOTTEN: usize = 100;
+/// At most this many of the player's tastes, and of the moments shared.
+pub const MOST_TASTES: usize = 20;
+pub const MOST_MOMENTS: usize = 12;
 
 impl Memory {
     /// What is kept in `settings` (nothing yet: an empty notebook).
@@ -326,10 +341,45 @@ impl Memory {
                 );
             }
         }
+        if !self.tastes.is_empty() {
+            text.push_str(
+                "What they like and don't in the game (weigh your own taste against it; agree only \
+where you really do):\n",
+            );
+            for taste in &self.tastes {
+                text.push_str(&format!("- {taste}\n"));
+            }
+        }
+        if !self.moments.is_empty() {
+            text.push_str(
+                "Moments you shared (bring one up only when it bears on now, in a clause):\n",
+            );
+            for moment in &self.moments {
+                text.push_str(&format!("- {moment}\n"));
+            }
+        }
         if !self.last_time.trim().is_empty() {
             text.push_str(&format!("Lately: {}\n", self.last_time.trim()));
         }
         text.trim_end().to_string()
+    }
+
+    /// Forget one of their tastes, or a moment, by its id (`id_of` its
+    /// text). Returns it.
+    pub fn forget_taste(&mut self, id: &str) -> Option<String> {
+        let at = self.tastes.iter().position(|t| id_of(t) == id)?;
+        let gone = self.tastes.remove(at);
+        self.keep_forgotten(&gone);
+        self.save();
+        Some(gone)
+    }
+
+    pub fn forget_moment(&mut self, id: &str) -> Option<String> {
+        let at = self.moments.iter().position(|m| id_of(m) == id)?;
+        let gone = self.moments.remove(at);
+        self.keep_forgotten(&gone);
+        self.save();
+        Some(gone)
     }
 
     /// The names and words the player uses, for hearing them right.
@@ -402,6 +452,16 @@ impl Memory {
         style.retain(|s| !self.is_forgotten(s));
         self.style = style;
         self.words = list("words", MOST_WORDS, 40);
+        if notebook["tastes"].is_array() {
+            let mut tastes = list("tastes", MOST_TASTES, 160);
+            tastes.retain(|t| !self.is_forgotten(t));
+            self.tastes = tastes;
+        }
+        if notebook["moments"].is_array() {
+            let mut moments = list("moments", MOST_MOMENTS, 200);
+            moments.retain(|m| !self.is_forgotten(m));
+            self.moments = moments;
+        }
         let last: String = notebook["last_time"]
             .as_str()
             .unwrap_or("")
@@ -677,6 +737,8 @@ pub fn look_back(memory: &Memory, told: &str, lessons: &[Entry], talk: &[String]
         "facts": memory.facts.iter().map(|f| f.text.clone()).collect::<Vec<_>>(),
         "style": memory.style,
         "words": memory.words,
+        "tastes": memory.tastes,
+        "moments": memory.moments,
         "last_time": memory.last_time,
     });
     let mut text = format!(
@@ -710,6 +772,8 @@ pub fn look_back(memory: &Memory, told: &str, lessons: &[Entry], talk: &[String]
             "facts": strings,
             "style": strings,
             "words": strings,
+            "tastes": strings,
+            "moments": strings,
             "last_time": {"type": "string"},
             "lessons": {"type": "array", "items": {
                 "type": "object",
@@ -718,7 +782,7 @@ pub fn look_back(memory: &Memory, told: &str, lessons: &[Entry], talk: &[String]
                 "additionalProperties": false,
             }},
         },
-        "required": ["facts", "style", "words", "last_time", "lessons"],
+        "required": ["facts", "style", "words", "tastes", "moments", "last_time", "lessons"],
         "additionalProperties": false,
     });
     Ask {
@@ -745,6 +809,12 @@ language they speak, less warnings...); at most 8.
 - words: names and words they say that speech-to-text could get wrong (their character's name as the game shows \
 it, maps, bosses, items, slang), spelled right — only a word they said in two sentences or more, never a name for \
 the player, never from a line of theirs that repeats what MapleSyrup had just said; at most 40.
+- tastes: what they said they like or don't in the game — music, maps, bosses, classes, ways of playing — only \
+from their own words, never from MapleSyrup's (\"the player thinks Ellinia's music is the most beautiful\"); keep \
+what still holds, at most 20, one short sentence each in the third person.
+- moments: the moments worth remembering together, each dated by its session (\"2026-11-01: first Kerning City \
+party quest together, King Slime down\"): a first, a close call survived, a boss finally beaten, a running joke; \
+newest last, at most 12, each one short sentence.
 - last_time: two or three sentences on what they did and talked about lately, so MapleSyrup can pick up from \
 there.
 - lessons: only what the player corrected MapleSyrup on in this conversation (a game fact, a name, how to do \
@@ -930,13 +1000,16 @@ impl Learning {
     }
 
     /// Forget one thing the phone showed, by its id: `m:` a fact, `s:` a
-    /// note on how they like it to talk, `a:` something they asked it to
-    /// remember, `k:` a lesson or something looked up. Returns what it was.
+    /// note on how they like it to talk, `t:` one of their tastes, `e:` a
+    /// moment shared, `a:` something they asked it to remember, `k:` a
+    /// lesson or something looked up. Returns what it was.
     pub fn forget(&self, id: &str) -> Option<String> {
         let (kind, id) = id.split_once(':')?;
         match kind {
             "m" => self.memory().forget(id),
             "s" => self.memory().forget_style(id),
+            "t" => self.memory().forget_taste(id),
+            "e" => self.memory().forget_moment(id),
             "k" => self.knowledge().forget(id),
             "a" => {
                 let file = self.settings.join(TOLD);
@@ -962,7 +1035,7 @@ impl Learning {
         let told: Vec<Value> = told_lines(&self.told())
             .map(|t| json!({"id": format!("a:{}", id_of(t)), "text": t}))
             .collect();
-        let (facts, style, lately, sessions, adapt) = {
+        let (facts, style, lately, sessions, adapt, tastes, moments, initiative) = {
             let memory = self.memory();
             (
                 memory
@@ -978,6 +1051,17 @@ impl Learning {
                 memory.last_time.clone(),
                 memory.sessions,
                 memory.adapt.clone(),
+                memory
+                    .tastes
+                    .iter()
+                    .map(|t| json!({"id": format!("t:{}", id_of(t)), "text": t}))
+                    .collect::<Vec<_>>(),
+                memory
+                    .moments
+                    .iter()
+                    .map(|m| json!({"id": format!("e:{}", id_of(m)), "text": m}))
+                    .collect::<Vec<_>>(),
+                memory.initiative.clone(),
             )
         };
         let knowledge = self.knowledge();
@@ -993,6 +1077,9 @@ impl Learning {
             "lately": lately,
             "sessions": sessions,
             "lessons": lessons,
+            "tastes": tastes,
+            "moments": moments,
+            "initiative": initiative,
             "looked_up": knowledge.looked_up(),
             "settle_ms": adapt.settle_ms,
             "eagerness": adapt.eagerness,
