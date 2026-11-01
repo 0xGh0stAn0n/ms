@@ -377,7 +377,10 @@ impl Workshop {
     /// Hand the workshop a task. Returns what to tell the player at once.
     pub fn ask(&self, task: Task) -> Result<String, String> {
         if !self.is_on() {
-            return Err("the workshop is off (Settings on the phone turns it on)".into());
+            return Err(
+                "the workshop is off (MapleSyrup started with --workshop on the PC turns it on)"
+                    .into(),
+            );
         }
         if self.coder().is_none() && matches!(task, Task::Change { .. }) {
             return Err(

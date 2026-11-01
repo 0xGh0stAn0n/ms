@@ -1010,9 +1010,17 @@ impl Updater {
     }
 
     /// The program this updater's staged version would be activated as:
-    /// put in place now (the phone's "update now"), to be relaunched.
+    /// put in place now (the phone's "update now"), to be relaunched. A
+    /// signed release only: a program built on this PC (the workshop's)
+    /// goes in when MapleSyrup is next started on the PC.
     pub fn install_now(&self, exe: &Path) -> Result<String, String> {
         let staged = self.store.staged().ok_or("nothing is staged")?;
+        if staged.local {
+            return Err(format!(
+                "{} was built on this PC: it goes in the next time MapleSyrup is started there",
+                staged.version
+            ));
+        }
         let version = staged.version.clone();
         activate(&self.store, exe, &self.running_text, &staged)?;
         self.say(format!("{version} put in place: restarting"));
@@ -1390,6 +1398,13 @@ mod tests {
             b"MZ..old"
         );
         assert_eq!(updater.store().pending().unwrap().to, "0.9.0");
+        // A program built on this PC waits for a start on the PC.
+        updater.store().clear_pending();
+        let mut local = stage(updater.store(), "0.9.0+local.abc1234", b"MZ..mine");
+        local.local = true;
+        updater.store().set_staged(&local).unwrap();
+        assert!(updater.install_now(&exe).is_err());
+        assert_eq!(fs::read(&exe).unwrap(), b"MZ..new");
         let _ = fs::remove_dir_all(&dir);
     }
 

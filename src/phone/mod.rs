@@ -208,16 +208,19 @@ pub enum Inbound {
     Workshop(WorkshopAsk),
 }
 
-/// What the phone asks of the workshop.
+/// What the phone asks of the workshop. Turning it on, asking for a change
+/// in writing and picking the coder are done on the PC itself (see
+/// [`WORKSHOP_ON_THE_PC`]): from the phone, it can only be stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkshopAsk {
-    On(bool),
-    /// Make this change.
-    Change(String),
+    /// Turn it off.
+    Off,
     Undo,
-    /// Use this coding agent ("claude" or "codex").
-    Coder(String),
 }
+
+/// Why the phone cannot turn the workshop on, ask it for a change or pick
+/// its coder.
+pub const WORKSHOP_ON_THE_PC: &str = "The workshop changes MapleSyrup's code on the PC, so it is turned on at the PC itself: start MapleSyrup there with --workshop. The phone can only turn it off or undo the last change.";
 
 /// What the phone asks of the updater.
 #[derive(Debug, Clone, PartialEq)]
@@ -922,32 +925,18 @@ impl Hub {
                 None => Response::json(400, &json!({"error": "on must be true or false"})),
             },
             ("POST", "/api/workshop") => {
-                let body = body();
-                let text = body
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .unwrap_or("");
-                let ask = match body.get("action").and_then(Value::as_str) {
-                    Some("on") => Some(WorkshopAsk::On(true)),
-                    Some("off") => Some(WorkshopAsk::On(false)),
-                    Some("change") if !text.is_empty() && text.len() <= 4000 => {
-                        Some(WorkshopAsk::Change(text.to_string()))
+                let ask = match body().get("action").and_then(Value::as_str) {
+                    Some("off") => WorkshopAsk::Off,
+                    Some("undo") => WorkshopAsk::Undo,
+                    Some("on" | "change" | "coder") => {
+                        return Response::json(403, &json!({"error": WORKSHOP_ON_THE_PC}));
                     }
-                    Some("undo") => Some(WorkshopAsk::Undo),
-                    Some("coder") if !text.is_empty() => Some(WorkshopAsk::Coder(text.to_string())),
-                    _ => None,
+                    _ => {
+                        return Response::json(400, &json!({"error": "action is off or undo"}));
+                    }
                 };
-                match ask {
-                    Some(ask) => {
-                        self.lock().inbox.push(Inbound::Workshop(ask));
-                        Response::json(200, &json!({"ok": true}))
-                    }
-                    None => Response::json(
-                        400,
-                        &json!({"error": "action is on, off, change (with text), undo or coder (with text)"}),
-                    ),
-                }
+                self.lock().inbox.push(Inbound::Workshop(ask));
+                Response::json(200, &json!({"ok": true}))
             }
             ("POST", "/api/update") => {
                 let body = body();
@@ -1762,10 +1751,7 @@ mod tests {
             ("/api/coach?k=k1", r#"{"on": false}"#),
             ("/api/update?k=k1", r#"{"action": "install"}"#),
             ("/api/update?k=k1", r#"{"action": "auto", "on": false}"#),
-            (
-                "/api/workshop?k=k1",
-                r#"{"action": "change", "text": "shorter HP warning"}"#,
-            ),
+            ("/api/workshop?k=k1", r#"{"action": "off"}"#),
             ("/api/workshop?k=k1", r#"{"action": "undo"}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/tone?k=k1", r#"{"tone": " Savage "}"#),
@@ -1810,7 +1796,7 @@ mod tests {
                 Inbound::Coach(false),
                 Inbound::Update(UpdateAsk::Install),
                 Inbound::Update(UpdateAsk::Auto(false)),
-                Inbound::Workshop(WorkshopAsk::Change("shorter HP warning".into())),
+                Inbound::Workshop(WorkshopAsk::Off),
                 Inbound::Workshop(WorkshopAsk::Undo),
                 Inbound::Turn("jumped in".into()),
                 Inbound::Tone(
@@ -1859,11 +1845,23 @@ mod tests {
             hub.handle(&request(
                 "POST",
                 "/api/workshop?k=k1",
-                r#"{"action": "change", "text": " "}"#
+                r#"{"action": "fly"}"#
             ))
             .status,
             400
         );
+        // Turning the workshop on, a change and the coder are the PC's to do.
+        for body in [
+            r#"{"action": "on"}"#,
+            r#"{"action": "change", "text": "shorter HP warning"}"#,
+            r#"{"action": "coder", "text": "codex"}"#,
+        ] {
+            let r = hub.handle(&request("POST", "/api/workshop?k=k1", body));
+            assert_eq!(r.status, 403, "{body}");
+            let out: Value = serde_json::from_slice(&r.body).unwrap();
+            assert_eq!(out["error"], WORKSHOP_ON_THE_PC);
+        }
+        assert!(hub.take_inbox().is_empty());
     }
 
     #[test]

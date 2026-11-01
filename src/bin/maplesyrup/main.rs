@@ -118,7 +118,8 @@ OPTIONS
                         yourself: ...\"): a coding agent installed here (Claude
                         Code or Codex) changes the source in --repo, it is
                         built and tested, and the new program installs at the
-                        next start. Also a switch on the phone.
+                        next start. Turned on here only: the phone can
+                        turn it off.
   --repo PATH           the checkout of MapleSyrup's source the workshop works
                         in (default %USERPROFILE%\\GitHub\\ms, or MAPLESYRUP_REPO)
   --self-test           check this PC: the engine, the phone link, the voice
@@ -6315,44 +6316,18 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                     }
                     Inbound::Workshop(ask) => match ask {
-                        phone::WorkshopAsk::On(on) => {
-                            workshop.set_on(on);
+                        // (Only turned on at the PC: `--workshop`.)
+                        phone::WorkshopAsk::Off => {
+                            workshop.set_on(false);
                             let mut memory = learning.memory();
-                            memory.workshop = Some(on);
+                            memory.workshop = Some(false);
                             let updates = memory.updates.unwrap_or(true);
                             memory.save();
                             drop(memory);
-                            // The channel's releases would wipe the local
-                            // work: off while the workshop is on.
-                            updater.set_auto(!on && options.update && updates);
-                            let line = if on {
-                                match workshop.coders().first() {
-                                    Some(coder) => format!(
-                                        "Workshop on: say \"change yourself: …\" and {} rewrites me here, on this PC; the site's updates are off meanwhile.",
-                                        coder.label()
-                                    ),
-                                    None => "Workshop on, but no coding agent is installed on this PC (Claude Code or Codex CLI): nothing can be changed until one is.".to_string(),
-                                }
-                            } else {
-                                "Workshop off: the site's updates are back on.".to_string()
-                            };
-                            out.session.line("workshop", &line);
-                            out.push(Kind::Info, line);
-                        }
-                        phone::WorkshopAsk::Change(instruction) => {
-                            out.show(
-                                Kind::Heard,
-                                &format!("[phone] change yourself: {instruction}"),
-                            );
-                            workshop_ask(
-                                &workshop,
-                                ms::workshop::Task::Change {
-                                    instruction,
-                                    context: recent_log(&out),
-                                },
-                                &mut out,
-                                &mut companion,
-                            );
+                            updater.set_auto(options.update && updates);
+                            let line = "Workshop off: the site's updates are back on.";
+                            out.session.line("workshop", line);
+                            out.push(Kind::Info, line.to_string());
                         }
                         phone::WorkshopAsk::Undo => {
                             out.show(Kind::Heard, "[phone] undo the last change");
@@ -6362,21 +6337,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 &mut out,
                                 &mut companion,
                             );
-                        }
-                        phone::WorkshopAsk::Coder(name) => {
-                            match ms::workshop::Coder::parse(&name) {
-                                Some(coder) => match workshop.prefer(coder) {
-                                    Ok(()) => {
-                                        let mut memory = learning.memory();
-                                        memory.workshop_coder = Some(name);
-                                        memory.save();
-                                        out.session
-                                            .line("workshop", &format!("coder: {}", coder.label()));
-                                    }
-                                    Err(e) => out.push(Kind::Info, e),
-                                },
-                                None => out.push(Kind::Info, format!("no such coder: {name}")),
-                            }
                         }
                     },
                     Inbound::Update(ask) => match ask {
