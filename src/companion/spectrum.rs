@@ -5,6 +5,7 @@
 //! are told. No level swears — the wild end roasts in clean words — so the
 //! whole bar is open to everyone.
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use serde::Deserialize;
@@ -25,16 +26,27 @@ pub struct Level {
     /// How it talks at this level, for the models.
     pub instructions: String,
     /// What it says when the bar lands on this level, in this level's own
-    /// words (one, the next each time): the player hears that it took.
+    /// words (one, the next each time), by language: the player hears that
+    /// it took, in their language when there are lines in it
+    /// ([`SET_LINES_FALLBACK`] otherwise).
     #[serde(default)]
-    pub said_when_set: Vec<String>,
+    pub said_when_set: BTreeMap<String, Vec<String>>,
 }
+
+/// The language every level's lines for when the bar lands on it are in.
+pub const SET_LINES_FALLBACK: &str = "en";
 
 impl Level {
     /// The `n`th of its lines for when the bar lands on it (they come round
-    /// in turn), if it has any.
-    pub fn set_line(&self, n: usize) -> Option<&str> {
-        let lines = &self.said_when_set;
+    /// in turn), in the language of `locale` (the phone's, as "he-IL") when
+    /// it has lines in it, else in [`SET_LINES_FALLBACK`]; none if it has
+    /// none.
+    pub fn set_line(&self, n: usize, locale: Option<&str>) -> Option<&str> {
+        let in_language = locale
+            .and_then(crate::ai::language::code)
+            .and_then(|code| self.said_when_set.get(&code))
+            .filter(|lines| !lines.is_empty());
+        let lines = in_language.or_else(|| self.said_when_set.get(SET_LINES_FALLBACK))?;
         if lines.is_empty() {
             None
         } else {
@@ -196,27 +208,48 @@ mod tests {
     }
 
     #[test]
-    fn each_level_says_it_took_in_its_own_words_and_they_come_round() {
+    fn each_level_says_it_took_in_its_own_words_and_the_players_language() {
         for level in Spectrum::get().levels() {
-            let n = level.said_when_set.len();
-            assert!(n > 0, "{} says nothing when the bar lands on it", level.id);
+            // English always, and Hebrew (a call in Hebrew heard "Yay, kids
+            // mode!" when the bar moved, 1 Nov 2026).
+            for code in [SET_LINES_FALLBACK, "he"] {
+                let lines = &level.said_when_set[code];
+                let n = lines.len();
+                assert!(
+                    n > 0,
+                    "{} says nothing in {code} when the bar lands on it",
+                    level.id
+                );
+                assert!(lines.iter().all(|l| !l.trim().is_empty()), "{}", level.id);
+                let locale = Some(code);
+                assert_eq!(
+                    level.set_line(0, locale),
+                    level.set_line(n, locale),
+                    "{}",
+                    level.id
+                );
+                assert_eq!(level.set_line(n - 1, locale), Some(lines[n - 1].as_str()));
+            }
+            // By the phone's locale; a language with no lines of its own
+            // hears English, as does a phone with no language.
+            let hebrew = level.set_line(0, Some("he-IL")).unwrap();
             assert!(
-                level.said_when_set.iter().all(|l| !l.trim().is_empty()),
-                "{}",
-                level.id
+                hebrew
+                    .chars()
+                    .any(|c| ('\u{05D0}'..='\u{05EA}').contains(&c)),
+                "{hebrew}"
             );
-            assert_eq!(level.set_line(0), level.set_line(n), "{}", level.id);
-            assert_eq!(
-                level.set_line(n - 1),
-                Some(level.said_when_set[n - 1].as_str())
-            );
+            assert_eq!(level.set_line(0, Some("iw")), Some(hebrew));
+            let english = level.said_when_set[SET_LINES_FALLBACK][0].as_str();
+            assert_eq!(level.set_line(0, Some("fr-FR")), Some(english));
+            assert_eq!(level.set_line(0, None), Some(english));
         }
         let none = Level {
             id: "x".into(),
             voice: Attitude::Blunt,
             instructions: String::new(),
-            said_when_set: Vec::new(),
+            said_when_set: BTreeMap::new(),
         };
-        assert_eq!(none.set_line(3), None);
+        assert_eq!(none.set_line(3, Some("he-IL")), None);
     }
 }

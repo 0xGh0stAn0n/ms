@@ -2285,9 +2285,10 @@ impl ToneHeard {
         true
     }
 
-    /// The level's next line for it.
-    fn line(&mut self, level: &Level) -> Option<String> {
-        let line = level.set_line(self.count).map(str::to_string);
+    /// The level's next line for it, in the language of `locale` (the
+    /// phone's) when the level has lines in it.
+    fn line(&mut self, level: &Level, locale: Option<&str>) -> Option<String> {
+        let line = level.set_line(self.count, locale).map(str::to_string);
         self.count += 1;
         line
     }
@@ -6006,7 +6007,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         );
                     }
                     _ => {
-                        if let Some(line) = tone_heard.line(level) {
+                        if let Some(line) = tone_heard.line(level, player_language.as_deref()) {
                             out.tell(Kind::Reply, &line, true, &mut companion);
                         }
                     }

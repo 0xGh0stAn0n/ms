@@ -142,7 +142,9 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     `/api/tone` and reads `tone` off the status. The bar is on the main
     screen, right under Start listening. When the level it talks at changes (not
     at start), `ToneHeard` waits for it to settle and
-    says the level's own `said_when_set` line; while Claude talks, Claude
+    says the level's own `said_when_set` line, in the phone's language
+    when the level has lines in it (English and Hebrew; English
+    otherwise); while Claude talks, Claude
     gets a `tone` event instead and says one itself. Claude has the
     level's rules (`claude::tone`) with every `heard` and `phone` event
     and in `player_profile`, and the brief (`kit/CLAUDE.md`) tells it to
