@@ -2155,12 +2155,13 @@
     postJson("/api/hearing", { text }).catch(() => {});
   }
   function interim(index, transcript) {
-    // While this phone speaks (and a moment after), nothing it writes down
-    // counts — not even more of the sentence it was writing as the voice
-    // began (what waited of it went then): it is its own voice. Half-duplex,
-    // like a walkie-talkie; the player still stops it by talking loud over
-    // it (talkingOver), which lets it listen at once.
-    if (held) return;
+    // While this phone speaks (and a moment after), what it writes down is
+    // not a sentence of the player's — mostly it is its own voice — but it
+    // goes to the PC as hearing: the player's words over it (two of them
+    // that it did not just say, or "stop") cut it there (Turns::hearing,
+    // Companion::barge_in). Recognition stopped while it spoke, and started
+    // again too late for the first words of "wait, stop" (bug sheet #6).
+    if (held) { hearing(transcript); return; }
     heardAt = Date.now();
     if (index !== current) { current = index; sentWords = 0; sentAll = ""; }
     said = transcript;
@@ -2182,7 +2183,7 @@
     }, settleMs);
   }
   function final(index, transcript) {
-    if (held) return;
+    if (held) { hearing(transcript); return; }
     clearTimeout(settleTimer);
     clearTimeout(hearingTimer);
     const rest = restOf(index, transcript);
@@ -2209,7 +2210,7 @@
   // it writes meanwhile is dropped. The player can still talk over it: a
   // loud voice (the phone's echo cancelling takes its own sound out) pauses
   // it, and it listens at once.
-  let held = false, holdTimer = 0, heldIndex = -1;
+  let held = false, holdTimer = 0, heldIndex = -1, recRunning = false;
   function speakingNow() { return !player.paused || (ownVoice && Date.now() < ownVoiceUntil); }
   function updateHold() {
     clearTimeout(holdTimer);
@@ -2231,11 +2232,11 @@
     if (hold) sendPending();
     if (listening && Recognition) $("micStatus").textContent = hold ? t("mic_talking") : t("mic_listening");
     if (!rec || !wantRec || !listening) return;
-    if (hold) { try { rec.abort(); } catch (e) {} }
-    else restartRecognition(0);
+    // (Recognition goes on while it speaks: see `interim`.)
+    if (!hold) restartRecognition(0);
   }
   function restartRecognition(tries) {
-    if (!rec || !wantRec || !listening || held) return;
+    if (!rec || !wantRec || !listening || recRunning) return;
     try { recStarted = Date.now(); rec.start(); }
     catch (e) { if (tries < 8) setTimeout(() => restartRecognition(tries + 1), 250); }
   }
@@ -2246,7 +2247,8 @@
   // (status.cut). Otherwise, after a moment, the clip goes on from where it
   // was, and that loudness no longer counts for it.
   let floorDb = -60, loudFor = 0, clipFloor = -100, clipAt = 0, measured = null, pausedFor = 0, loudDb = -100;
-  const MEASURE_MS = 300, PAUSE_MS = 1500;
+  // (Long enough for recognition to catch the words that follow.)
+  const MEASURE_MS = 300, PAUSE_MS = 2500;
   player.addEventListener("playing", () => {
     if (measured !== playingClip) { measured = playingClip; clipFloor = -100; }
     clipAt = Date.now();
@@ -2275,7 +2277,9 @@
   function resumeClip() {
     pausedFor = 0;
     if (!player.getAttribute("src") || !player.paused) return;
-    clipFloor = Math.max(clipFloor, loudDb);
+    // Pausing again takes as loud a voice as this one (not 10 dB more, as
+    // it once did: one miss and the player could not stop it again).
+    clipFloor = Math.max(clipFloor, loudDb - 10);
     player.play().catch(() => {});
   }
 
@@ -2318,16 +2322,19 @@
         note(t("rec_error") + " " + e.error);
       }
     };
+    const me = rec;
+    rec.onstart = () => { if (rec === me) recRunning = true; };
     rec.onend = () => {
+      if (rec === me) recRunning = false;
       // Words still waiting when recognition stopped are sent as they are.
       clearTimeout(settleTimer);
       sendPending();
       current = -1; sentWords = 0; sentAll = ""; pending = "";
-      // While held, it is started again when MapleSyrup stops talking.
-      if (!wantRec || !listening || held) return;
+      // It listens while MapleSyrup talks too (see `interim`).
+      if (!wantRec || !listening) return;
       quickEnds = Date.now() - recStarted < 1500 ? quickEnds + 1 : 0;
       setTimeout(() => {
-        if (!wantRec || !listening || held) return;
+        if (!wantRec || !listening || recRunning) return;
         try { recStarted = Date.now(); rec.start(); } catch (e) {}
       }, quickEnds > 3 ? 3000 : 120);
     };
