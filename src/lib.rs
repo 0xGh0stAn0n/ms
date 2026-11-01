@@ -30,6 +30,7 @@ pub mod claude;
 pub mod coach;
 pub mod companion;
 pub mod config;
+pub mod crash;
 pub mod game_state;
 pub mod hud;
 pub mod knowledge;

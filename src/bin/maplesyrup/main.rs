@@ -358,6 +358,7 @@ fn main() {
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     };
+    ms::crash::install(&tls::settings_dir());
     // Started by Claude Code as its channel: the protocol on stdio, and
     // nothing else (no console of its own, no update).
     if options.claude_channel {
@@ -3111,6 +3112,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     ai::pronounce::load(&settings_dir);
     let session_dir = session::new_dir(&session::sessions_base(&settings_dir));
     let session = Session::open(session_dir.clone());
+    ms::crash::log_at(session_dir.join("log.txt"));
+    if let Some(report) = ms::crash::left(&settings_dir) {
+        println!(
+            "MapleSyrup crashed last time. What happened is in {} (on this PC only; nothing was sent).",
+            report.display()
+        );
+    }
     // What the session comes to, in numbers, kept on this PC — and made
     // ready to share only if the player turned that on (`ms::metrics`).
     let mut stats = ms::metrics::Stats::start(&settings_dir);
