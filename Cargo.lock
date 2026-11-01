@@ -1712,7 +1712,7 @@ dependencies = [
 [[package]]
 name = "syrup"
 version = "0.1.0"
-source = "git+https://github.com/boggioMichael/syrup?rev=08834f800f604ece7dab2ad9ec5e74ff9cfca2f7#08834f800f604ece7dab2ad9ec5e74ff9cfca2f7"
+source = "git+https://github.com/datta-syrup/syrup?rev=08834f800f604ece7dab2ad9ec5e74ff9cfca2f7#08834f800f604ece7dab2ad9ec5e74ff9cfca2f7"
 dependencies = [
  "block2",
  "image",

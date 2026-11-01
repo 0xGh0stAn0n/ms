@@ -1,6 +1,6 @@
 # MapleSyrup
 
-**Download the installer: [MapleSyrup-Setup.exe](https://github.com/boggioMichael/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** — the whole setup, Claude included, built from `master` by CI on every push (Windows 10 1903+ or 11, 64-bit; no administrator). The portable zip and the build's logs are beside it, on the [`build-output/master/windows`](https://github.com/boggioMichael/ms/tree/build-output/master/windows) branch.
+**Download the installer: [MapleSyrup-Setup.exe](https://github.com/datta-syrup/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** — the whole setup, Claude included, built from `master` by CI on every push (Windows 10 1903+ or 11, 64-bit; no administrator). The portable zip and the build's logs are beside it, on the [`build-output/master/windows`](https://github.com/datta-syrup/ms/tree/build-output/master/windows) branch.
 
 1. Run it. If Windows says "Windows protected your PC": *More info* → *Run anyway* (the program is not code-signed yet). It asks for your API keys — OpenAI, ElevenLabs (the voices on the phone), xAI (optional) — installs Claude Code if the PC doesn't have it, and adds MapleSyrup to the Claude desktop app if it's there.
 2. Double-click **MapleSyrup** on the desktop: MapleSyrup's window (a QR code) and Claude's open. The first time, Claude Code asks you to log in to your Claude account; to "development channel" choose *I am using this for local development*, to auto mode say yes.
@@ -8,7 +8,7 @@
 
 [בעברית: הוראות התקנה והפעלה](installer/release-notes.md#בעברית-התקנה-והפעלה) · everything it does: [package/README.txt](package/README.txt)
 
-[![logo](https://github.com/boggioMichael/ms/blob/mvp/logos/final_logo.png)](https://youtu.be/yXIR59gGKhE)
+[![logo](https://github.com/datta-syrup/ms/blob/mvp/logos/final_logo.png)](https://youtu.be/yXIR59gGKhE)
 
 https://github.com/user-attachments/assets/0ce354f2-6cfe-4d13-8a45-432393b07cec
 
@@ -18,7 +18,7 @@ It is non-invasive by design: no game-memory reads, code injection, or input aut
 
 ## Get MapleSyrup
 
-Download **[MapleSyrup-Setup.exe](https://github.com/boggioMichael/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** (master's build; versioned releases will be on [Releases](https://github.com/boggioMichael/ms/releases)) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
+Download **[MapleSyrup-Setup.exe](https://github.com/datta-syrup/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** (master's build; versioned releases will be on [Releases](https://github.com/datta-syrup/ms/releases)) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
 
 - **Claude, live.** Add MapleSyrup to the Claude desktop app (Start menu) and in any chat Claude sees your game: HP, MP and EXP, level and map, what moves on the screen, a dialog's text, what you taught it, a look at the screen. Or start *MapleSyrup with Claude*: Claude Code with the game pushed to it as it happens and MapleSyrup's voice on your phone — Claude for anything, with your game besides.
 - **Several times faster eyes, the same answers.** The vision runs on the widest instructions your CPU has: 25.6 → 3.4 ms a 4K frame with the HUD in view on a Ryzen 7 9800X3D, every reading checked to be what it was before ([bench/README.md](bench/README.md)).
@@ -47,7 +47,7 @@ Everything it does, recording and streaming, and privacy: [package/README.txt](p
 ## What the MVP includes
 
 - Windows game-window discovery and capture through the compositor (Windows.Graphics.Capture, the frame kept on the GPU; GDI as the fallback), with a static-image fallback.
-- Every pixel operation on [Syrup](https://github.com/boggioMichael/syrup), the generic vision engine: *Syrup sees, MapleSyrup understands.* MapleSyrup keeps only what the pixels mean in MapleStory and the orchestration.
+- Every pixel operation on [Syrup](https://github.com/datta-syrup/syrup), the generic vision engine: *Syrup sees, MapleSyrup understands.* MapleSyrup keeps only what the pixels mean in MapleStory and the orchestration.
 - Deterministic first: the HUD is found from the pixels alone, its bars measured and its numbers read in the game's own font on every frame, taught things followed by template matching and tracking; a vision model is asked only when the pixels fail, and never on the per-frame path. No OCR on the per-frame path either.
 - Explicit confidence, reliability, and failure-reason semantics instead of silent empty results; a number is `read` only when it was read this frame, else the bar's fill is an estimate and is called one.
 - Structured `WorldState` and serializable `GameState` output; the preview's detectors (motion, dialogs, panels, platform edges) run only while something shows them.
@@ -157,7 +157,7 @@ ffmpeg -framerate 15 -i out/record/frame_%06d.png -c:v libx264 -pix_fmt yuv420p 
 The [Real recording demo](.github/workflows/real-recording.yml) workflow does this on a GitHub
 Windows runner for the first three minutes of `chaos-zakum-solo-lvl230.mp4` and publishes the
 video, the timings and the logs to the
-[`demo/real-recording-output`](https://github.com/boggioMichael/ms/tree/demo/real-recording-output)
+[`demo/real-recording-output`](https://github.com/datta-syrup/ms/tree/demo/real-recording-output)
 branch. On 2026-09-30 it processed 2,700 frames with a mean of 43.2 ms of perception per frame
 (median 35.6 ms, p95 44.7 ms); 101 frames (3.7%), the ones where OCR runs, took 0.14 to 0.73 s.
 All 128 tests passed on the same runner. The recording is a compressed screen capture, so the

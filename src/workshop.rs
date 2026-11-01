@@ -555,7 +555,7 @@ impl Workshop {
     fn prepare(&self) -> Result<(), String> {
         if !self.repo.join(".git").exists() {
             return Err(format!(
-                "no checkout of MapleSyrup at {} (clone github.com/boggioMichael/ms there, or set MAPLESYRUP_REPO)",
+                "no checkout of MapleSyrup at {} (clone github.com/datta-syrup/ms there, or set MAPLESYRUP_REPO)",
                 self.repo.display()
             ));
         }
