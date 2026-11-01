@@ -1065,6 +1065,17 @@ impl Sight {
         // from the last read by nature.)
         if seen.hp_number.is_none() {
             seen.hp = self.judge_fill(0, seen.hp, now);
+            // A death the teacher read, its empty bar measuring nothing: that
+            // read still holds, as a read (a fill at zero is no reading, see
+            // `companion::SLIVER`), so the companion sees the death.
+            if seen.hp.is_none()
+                && let Some(t) = self.told[0].filter(|t| {
+                    t.percent <= 0.5 && now.saturating_duration_since(t.at) <= TOLD_JUDGES
+                })
+            {
+                seen.hp = Some(0.0);
+                seen.hp_number = t.amount;
+            }
         }
         if seen.mp_number.is_none() {
             seen.mp = self.judge_fill(1, seen.mp, now);
@@ -2882,6 +2893,11 @@ mod tests {
                 ..Default::default()
             },
         );
+        // The empty bar after the read of 0 is still 0, frame after frame.
+        for _ in 0..3 {
+            let seen = sight.observe(&status_bar(0.0, 100.0), Instant::now());
+            assert_eq!(seen.hp, Some(0.0), "{seen:?}");
+        }
         let seen = sight.observe(&status_bar(100.0, 100.0), Instant::now());
         assert!(seen.hp.is_some_and(|hp| hp > 90.0), "{seen:?}");
         let _ = std::fs::remove_dir_all(&dir);
