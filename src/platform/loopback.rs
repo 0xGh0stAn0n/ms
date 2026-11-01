@@ -212,6 +212,13 @@ mod win {
                     } else if format.bits == 32 {
                         let ints = std::slice::from_raw_parts(data as *const i32, values);
                         samples.extend(ints.iter().map(|&s| s as f32 / 2_147_483_648.0));
+                    } else if format.bits == 24 {
+                        // Packed, three bytes a sample (USB and studio
+                        // interfaces): the top three bytes of an i32.
+                        let bytes = std::slice::from_raw_parts(data as *const u8, values * 3);
+                        samples.extend(bytes.chunks_exact(3).map(|b| {
+                            i32::from_le_bytes([0, b[0], b[1], b[2]]) as f32 / 2_147_483_648.0
+                        }));
                     } else {
                         samples.resize(values, 0.0);
                     }
