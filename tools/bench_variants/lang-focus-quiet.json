@@ -1,0 +1,33 @@
+{
+  "about": "lang-focus, and a tool the call calls instead of speaking when what it heard wasn't said to it (OpenAI's voice prompting guide: a no-op tool for audio not addressed to the agent), as the branch claude/quiet-when-not-addressed has it.",
+  "replace": [
+    {
+      "find": "like a friend on voice chat.",
+      "with": "like a friend on voice chat.\n\n# Language\n- SPEAK ONLY HEBREW, the language set on the player's phone. Every word you say is Hebrew: greetings, answers, \"let me think\" bridges, what the thinker or a tool hands you, the watcher's lines. Game names stay as players say them, inside Hebrew sentences.\n- The player speaks Hebrew, mixing in English game words: hear them as Hebrew. When they say a whole sentence in another language, answer it in Hebrew all the same.\n- Don't take a language from an accent, a word or two, noise, a video or your own voice coming back.\n- Switch only when the player asks you to speak another language, in any words: call set_language and go on in it at once (it changes their phone's setting too).\n- Write think_it_through's question in Hebrew.\n\n# Every reply\n- Answer what the player just said, first and only: a greeting gets a greeting, a question its answer.\n- What your vision engine reads is for you to see the game by, not to report. Bring up HP, MP, a death, their level or the map only when they ask about the game, when it changes the answer to what they asked, or when a watcher line asks you to.\n- When these compete: the player's words first, then the watcher's line, then the reading.\n\n# Unclear audio\n- Only respond to clear speech. If what you heard was said to you but unintelligible, noisy, cut off or made no sense: don't guess and don't answer with the game; say in a few words, in Hebrew, that you didn't catch it (never the same words twice in a row).\n- If it wasn't said to you at all (noise, a video, the game's own sound, the player talking to someone else): call wait_for_user and say nothing."
+    },
+    {
+      "find": "- Speak the language set on their phone (below), every time, whatever language they talk to you in: you understand them in any. When they ask you to speak another language, in any words, call set_language and go on in it at once; when they ask you to talk to them another way (gentler, ruder, swearing or not, no filter), call set_tone. Either changes their phone's setting too, where they see it. Noise, a word or two you aren't sure of, a video or your own voice coming back never change the language. Say game words the way players say them.",
+      "with": "- When they ask you to talk to them another way (gentler, ruder, swearing or not, no filter), call set_tone; it changes their phone's setting too, where they see it."
+    },
+    {
+      "find": " If what you heard makes no sense, or was only noise, say in a few words, in the language you were speaking, that you didn't catch it — never answer it with the game.",
+      "with": ""
+    },
+    {
+      "find": "6. Danger first: when their HP is low or something is about to kill them, say that before anything else, in two or three words.",
+      "with": "6. Danger: the watcher tells you when their HP or MP is low or something is about to kill them; pass that on when it does, in two or three words. Your own replies answer what they said."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "wait_for_user",
+      "description": "Say nothing and call this when what you heard wasn't said to you: the player talking to someone else (a friend in the room, their stream, another call), a video, the game's own sound, or noise. Never when they spoke to you, even unclearly: then say in a few words that you didn't catch it.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "quiet": "wait_for_user"
+}

@@ -46,7 +46,9 @@
   (a JSON file: as given, or under bench\variants): "replace" is a list of
   {"find", "with"} applied to the instructions MapleSyrup gives the call
   (each "find" must be in them exactly once), "prepend" and "append" add
-  text. Nothing in MapleSyrup changes: the bench's call alone is told.
+  text; "tools" adds tools to the call's own, and "quiet" names the one the
+  call calls instead of speaking (answered as the phone answers it). Nothing
+  in MapleSyrup changes: the bench's call alone is told.
 
 .PARAMETER TtsStyle
   How the questions are spoken (the voice's instructions).
@@ -58,8 +60,9 @@
   was, with its own command line.
 
 .NOTES
-  Besides the questions it plays speech nobody could make out (audio\unclear.pcm,
-  when there: does it say it didn't catch it?), a room with nobody talking
+  Besides the questions it plays the player talking to someone else in the
+  room (does it keep out of it?), speech nobody could make out
+  (audio\unclear.pcm, when there: does it say it didn't catch it?), a room with nobody talking
   (does the call answer noise?), a pause mid-sentence (does it jump in?) and
   talks over a long answer (how soon does it notice?). Each starts once the
   call is quiet, and an answer is the one to what it heard last: one begun
@@ -139,6 +142,8 @@ $BuiltIn = @(
     "ספר לי בדיחה קצרה",
     "מה דעתך, כדאי לי לקחת הפסקה לאכול משהו?"
 )
+# The player talking to someone else in the room, not to MapleSyrup.
+$Aside = "כן אמא, אני כבר בא, עוד חמש דקות"
 # A question with a long answer, and what is said over it.
 $LongQuestion = "תספר לי בפירוט את כל הסיפור של מייפל איילנד מההתחלה"
 $OverQuestion = "רגע רגע, עצור. כמה MP יש לי?"
@@ -498,14 +503,36 @@ Write-Host "Measuring $Measured"
         }
         if ($variantSpec.prepend) { $Instructions = $variantSpec.prepend + "`n`n" + $Instructions }
         if ($variantSpec.append) { $Instructions = $Instructions + "`n`n" + $variantSpec.append }
+        if ($variantSpec.tools) {
+            $own = @($Created.Event.session.tools | Where-Object { $_ })
+            if ($own.Count -eq 0) { throw "variant ${Variant}: the call's own tools are not known, so none are added" }
+            $Update.tools = @($own) + @($variantSpec.tools)
+            Write-Host ("Variant {0}: {1} tools, {2} of them its own" -f $Variant, $Update.tools.Count, $own.Count)
+        }
+        if ($variantSpec.quiet) { $Call | Add-Member -NotePropertyName quiet -NotePropertyValue $variantSpec.quiet -Force }
         $Update.instructions = $Instructions
         Write-Host ("Variant {0}: {1} characters of instructions" -f $Variant, $Instructions.Length)
     }
-    $Socket.Send((@{ type = "session.update"; session = $Update } | ConvertTo-Json -Depth 10 -Compress))
-    Start-Sleep -Milliseconds 500
-    $Opening += Read-Events
+    # (Deep enough for the tools' schemas: deeper ones would go as text.)
+    $Socket.Send((@{ type = "session.update"; session = $Update } | ConvertTo-Json -Depth 50 -Compress))
+    $deadline = [BenchClock]::Ms() + 5000
+    do {
+        Start-Sleep -Milliseconds 250
+        $Opening += Read-Events
+        $updated = @($Opening | Where-Object { $_.Type -eq "session.updated" -or $_.Type -eq "error" })
+    } while ($updated.Count -eq 0 -and [BenchClock]::Ms() -lt $deadline)
+    $UpdateErrors = @($Opening | Where-Object { $_.Type -eq "error" } | ForEach-Object { $_.Event.error.message })
+    foreach ($why in $UpdateErrors) { Write-Host "The call refused this run's settings: $why" }
     $Session = ($Opening | Where-Object { $_.Type -eq "session.updated" } | Select-Object -Last 1).Event.session
     if (-not $Session) { $Session = $Created.Event.session }
+    # A variant the call did not take is not measured.
+    if ($Instructions) {
+        foreach ($change in @($variantSpec.replace)) {
+            $mark = ([string]$change.with).Split("`n")[0]
+            if ($mark -and -not ([string]$Session.instructions).Contains($mark)) { throw "variant ${Variant}: the call did not take its instructions ($($UpdateErrors -join '; '))" }
+        }
+    }
+    if ($variantSpec.quiet -and -not @($Session.tools | Where-Object { $_.name -eq $variantSpec.quiet })) { throw "variant ${Variant}: the call did not take its $($variantSpec.quiet) tool" }
 
     # Whether a line is in the phone's language, by its letters (a language
     # in Latin letters: Latin letters); None for a line without letters.
@@ -536,8 +563,9 @@ Write-Host "Measuring $Measured"
 
     $Turns = New-Object System.Collections.ArrayList
     $AllEvents = New-Object System.Collections.ArrayList
-    $Specs = @($Lines | ForEach-Object { [pscustomobject]@{ Text = $_; Unclear = $false } })
-    if (Test-Path $UnclearFile) { $Specs += [pscustomobject]@{ Text = "(speech nobody could make out)"; Unclear = $true } }
+    $Specs = @($Lines | ForEach-Object { [pscustomobject]@{ Text = $_; Unclear = $false; Aside = $false } })
+    $Specs += [pscustomobject]@{ Text = $Aside; Unclear = $false; Aside = $true }
+    if (Test-Path $UnclearFile) { $Specs += [pscustomobject]@{ Text = "(speech nobody could make out)"; Unclear = $true; Aside = $false } }
     $Index = 0
     foreach ($Spec in $Specs) {
         $Index++
@@ -556,7 +584,7 @@ Write-Host "Measuring $Measured"
         $SpeechEnd = $Socket.Stream($Pcm, $SampleRate, $ChunkMs)
         $Socket.Listen($SampleRate, $ChunkMs, $SpeechEnd, $TurnMaxMs)
         $Events = Read-Events
-        $Turn = [ordered]@{ question = $Text; unclear = $Spec.Unclear; speech_ms = [math]::Round($SpeechEnd - $Began) }
+        $Turn = [ordered]@{ question = $Text; unclear = $Spec.Unclear; aside = $Spec.Aside; speech_ms = [math]::Round($SpeechEnd - $Began) }
         $first = { param($events, $types) ($events | Where-Object { $types -contains $_.Type } | Select-Object -First 1) }
         $answer = Get-Answer $Events
         $Turn.vad_ms = if ($answer.Stop) { [math]::Round($answer.Stop.At - $SpeechEnd) } else { $null }
@@ -712,13 +740,17 @@ Write-Host "Measuring $Measured"
     $Name = if ($Label) { "$Stamp $Label" } else { $Stamp }
     $Report = [ordered]@{
         when = (Get-Date -Format o); label = $Label; measured = $Measured; model = $Call.model
-        variant = $Variant; instructions = $Instructions
+        variant = $Variant; instructions = $Instructions; update_errors = $UpdateErrors
         session = [ordered]@{ reasoning = $Session.reasoning; turn_detection = $Session.audio.input.turn_detection; noise_reduction = $Session.audio.input.noise_reduction; transcription = $Session.audio.input.transcription; voice = $Session.audio.output.voice; speed = $Session.audio.output.speed }
         turns = $Turns; noise = $NoiseTurn; pause = $PauseTurn; talk_over = $OverTurn; events = $AllEvents; error = $Socket.Error
     }
     $Report | ConvertTo-Json -Depth 12 | Set-Content -Encoding UTF8 (Join-Path $ResultsDir "$Name.json")
-    $sounds = @($Turns | Where-Object { $null -ne $_.first_sound_ms } | ForEach-Object { $_.first_sound_ms } | Sort-Object)
-    $vads = @($Turns | Where-Object { $null -ne $_.vad_ms } | ForEach-Object { $_.vad_ms } | Sort-Object)
+    # (The questions: not the aside, not the speech nobody could make out.)
+    $Asked = @($Turns | Where-Object { -not $_.unclear -and -not $_.aside })
+    $sounds = @($Asked | Where-Object { $null -ne $_.first_sound_ms } | ForEach-Object { $_.first_sound_ms } | Sort-Object)
+    $vads = @($Asked | Where-Object { $null -ne $_.vad_ms } | ForEach-Object { $_.vad_ms } | Sort-Object)
+    $asideTurn = $Turns | Where-Object { $_.aside } | Select-Object -First 1
+    $unclearTurn = $Turns | Where-Object { $_.unclear } | Select-Object -First 1
     $median = { param($xs) if ($xs.Count) { $xs[[int][math]::Floor(($xs.Count - 1) / 2)] } else { $null } }
     $Summary = @(
         "MapleSyrup live call bench — $Name",
@@ -728,6 +760,8 @@ Write-Host "Measuring $Measured"
         ("first sound after the question ended: median {0} ms, min {1}, max {2} (n={3})" -f (& $median $sounds), ($sounds | Select-Object -First 1), ($sounds | Select-Object -Last 1), $sounds.Count),
         ("of which hearing the question stop: median {0} ms; answers begun mid-question and cut short: {1}" -f (& $median $vads), (@($Turns | ForEach-Object { $_.cut_in }) | Measure-Object -Sum).Sum),
         ("answers in the phone's language ({0}): {1} of {2}" -f $Lang, @($Turns | Where-Object { $_.in_language -eq $true }).Count, @($Turns | Where-Object { $null -ne $_.in_language }).Count),
+        $(if ($asideTurn) { "the player talking to someone else: " + $(if ($asideTurn.kept_quiet) { "kept quiet" } elseif ($asideTurn.said) { "said: " + $asideTurn.said } else { "said nothing" }) } else { "" }),
+        $(if ($unclearTurn) { "speech nobody could make out: " + $(if ($unclearTurn.kept_quiet) { "kept quiet" } elseif ($unclearTurn.said) { "said: " + $unclearTurn.said } else { "said nothing" }) } else { "" }),
         ("a room with nobody talking ({0} dB, {1} s): heard speech {2} times, answered {3} times, spoke: {4}{5}" -f $NoiseTurn.noise_db, ($NoiseTurn.noise_ms / 1000), $NoiseTurn.heard_speech, $NoiseTurn.answered, $NoiseTurn.spoke, $(if ($NoiseTurn.said) { ": " + $NoiseTurn.said } else { "" })),
         ("a pause of {0} ms mid-sentence: jumped in: {1}{2}; the whole sentence answered {3} ms after it ended: {4}" -f $PauseTurn.pause_ms, $PauseTurn.jumped_in, $(if ($PauseTurn.jumped_in) { " (" + $PauseTurn.jumped_after_ms + " ms into the pause)" } else { "" }), $PauseTurn.first_sound_ms, $PauseTurn.said),
         ("talking over a long answer ({0}): noticed {1} ms after the player began; the new question answered {2} ms after it ended: {3}" -f $OverTurn.long_answer, $OverTurn.noticed_ms, $OverTurn.next_first_sound_ms, $OverTurn.said_after),
