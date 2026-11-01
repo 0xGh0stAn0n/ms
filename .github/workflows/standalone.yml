@@ -22,6 +22,12 @@ name: MapleSyrup standalone
 #   vars.SITE_URL                 where the site is served (https://datta-syrup.ai)
 #   vars.SITE_DOWNLOADS           the folder in the repository served as
 #                                 /downloads/ (default: downloads)
+# Code signing (docs/signing.md), on a version tag or a publish run, once
+# SignPath is set up: secrets.SIGNPATH_API_TOKEN, vars.SIGNPATH_ORGANIZATION_ID,
+# vars.SIGNPATH_PROJECT (default: maplesyrup) and vars.SIGNPATH_POLICY
+# (default: release-signing). Without it, every build signs a copy with a
+# throwaway test certificate, so the steps are known to work; that copy is
+# never shipped.
 # A commit message with [vendor-only] runs the vendor job alone.
 on:
   push:
@@ -85,6 +91,8 @@ jobs:
       # The C runtime linked in: MapleSyrup.exe runs on a PC without the
       # Visual C++ Redistributable.
       RUSTFLAGS: "-C target-feature=+crt-static"
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGN: ${{ secrets.SIGNPATH_API_TOKEN != '' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish) }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -141,6 +149,48 @@ jobs:
             fi
             exit $status
           } 2>&1 | tee logs/record-test.log
+      - name: Signing, tested with a throwaway certificate
+        if: env.SIGN != 'true'
+        shell: pwsh
+        run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=MapleSyrup test" -CertStoreLocation Cert:\CurrentUser\My
+          $root = "Cert:\LocalMachine\Root"
+          Export-Certificate -Cert $cert -FilePath "$env:RUNNER_TEMP\test.cer" | Out-Null
+          Import-Certificate -FilePath "$env:RUNNER_TEMP\test.cer" -CertStoreLocation $root | Out-Null
+          $copy = "$env:RUNNER_TEMP\signing-test.exe"
+          Copy-Item target\release\maplesyrup.exe $copy
+          Set-AuthenticodeSignature -FilePath $copy -Certificate $cert -HashAlgorithm SHA256 | Out-Null
+          $status = (Get-AuthenticodeSignature $copy).Status
+          "test signature: $status" | Tee-Object logs\signing.log
+          Remove-Item $copy
+          if ($status -ne "Valid") { exit 1 }
+      - name: Upload the programs for signing
+        if: env.SIGN == 'true'
+        id: unsigned-exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: |
+            target/release/maplesyrup.exe
+            target/release/vision_debug.exe
+          if-no-files-found: error
+      - name: Sign the programs (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT || 'maplesyrup' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY || 'release-signing' }}
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.unsigned-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-exe
+      - name: The signed programs in place
+        if: env.SIGN == 'true'
+        run: |
+          cp signed-exe/maplesyrup.exe signed-exe/vision_debug.exe target/release/
+          powershell -Command "Get-AuthenticodeSignature target/release/maplesyrup.exe, target/release/vision_debug.exe | Format-Table Status, Path -AutoSize; if ((Get-AuthenticodeSignature target/release/maplesyrup.exe).Status -ne 'Valid') { exit 1 }" | tee logs/signing.log
       - name: Package
         run: |
           pkg="$RUNNER_TEMP/MapleSyrup"
@@ -160,6 +210,34 @@ jobs:
           MSYS_NO_PATHCONV=1 "$iscc" /Q "/DAppVersion=$version" "/DSourceDir=$(cygpath -w "$RUNNER_TEMP/MapleSyrup")" "/O$(cygpath -w "$RUNNER_TEMP")" installer/MapleSyrup.iss 2>&1 | tee logs/installer.log
           ls -l "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe | tee -a logs/installer.log
           sha256sum "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe | tee -a logs/installer.log
+      - name: Upload the installer for signing
+        if: env.SIGN == 'true'
+        id: unsigned-setup
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: ${{ runner.temp }}/MapleSyrup-Setup-*.exe
+          if-no-files-found: error
+      - name: Sign the installer (SignPath)
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT || 'maplesyrup' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY || 'release-signing' }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-setup
+      - name: The signed installer in place
+        if: env.SIGN == 'true'
+        run: |
+          cp signed-setup/MapleSyrup-Setup-*.exe "$RUNNER_TEMP/"
+          setup=$(ls "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe)
+          powershell -Command "if ((Get-AuthenticodeSignature '$(cygpath -w "$setup")').Status -ne 'Valid') { exit 1 }"
+          echo "signed: $setup" | tee -a logs/signing.log
+          sha256sum "$setup" | tee -a logs/installer.log
       - name: Installer test (install, run, uninstall)
         continue-on-error: true
         # A step of the install that waited for an answer nobody gives would
