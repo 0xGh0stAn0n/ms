@@ -250,8 +250,14 @@ const UNREAD_SLOWLY_AFTER: u32 = 10;
 const UNREAD_EVERY: u32 = 5;
 /// How often a field that cannot be read asks for a new example.
 const SAMPLE_EVERY: Duration = Duration::from_secs(3);
-/// How far a label's number may be from the bar's fill to be believed.
+/// How far a label's number may be from the bar's fill to be believed,
+/// while the bar is not fitted (its track's end a guess from its fill).
 pub const LABEL_TOLERANCE: f32 = 12.0;
+/// How far, once the bar is fitted (a reading fixed where its track ends):
+/// a misread low digit (a 9 read as a 7 in 390/400) moves the percent by
+/// less than [`LABEL_TOLERANCE`], and the font would learn it, keep it and
+/// misread that digit from then on.
+pub const LABEL_TOLERANCE_FITTED: f32 = 3.0;
 /// Frames of disagreement between the number and the bar before the sight
 /// asks for a fresh look.
 pub const DISAGREE_FOR: u32 = 30;
@@ -935,13 +941,25 @@ impl Numbers {
     }
 
     /// Whether `text`, as a label for `field`, says a number that agrees
-    /// with the bar's fill (when the bar could be measured).
-    pub fn believable(field: Field, text: &str, bar_percent: Option<f32>) -> Result<Value, String> {
+    /// with the bar's fill (when the bar could be measured): within
+    /// [`LABEL_TOLERANCE_FITTED`] of a `fitted` bar, [`LABEL_TOLERANCE`] of
+    /// one whose track's end is still a guess.
+    pub fn believable(
+        field: Field,
+        text: &str,
+        bar_percent: Option<f32>,
+        fitted: bool,
+    ) -> Result<Value, String> {
         let value = parse(field, text)
             .ok_or_else(|| format!("{text:?} is not a {} value", field.label()))?;
         if let Some(bar) = bar_percent {
             let p = value.percent();
-            if (p - bar).abs() > LABEL_TOLERANCE {
+            let tolerance = if fitted {
+                LABEL_TOLERANCE_FITTED
+            } else {
+                LABEL_TOLERANCE
+            };
+            if (p - bar).abs() > tolerance {
                 return Err(format!("{text:?} says {p:.0}% but the bar shows {bar:.0}%"));
             }
         }
@@ -1298,6 +1316,24 @@ impl Numbers {
         state.disagreements
     }
 
+    /// Forget `field`'s examples and their pictures, and the fonts learned
+    /// from them: its number kept disagreeing with its bar, and a wrong
+    /// example (a digit learned as another) is the likelier cause. It is
+    /// learned again from the next labels.
+    pub fn forget_field(&mut self, field: Field) {
+        let (gone, kept): (Vec<Sample>, Vec<Sample>) = std::mem::take(&mut self.samples)
+            .into_iter()
+            .partition(|s| s.field == field);
+        for sample in &gone {
+            let _ = std::fs::remove_file(self.dir.join(&sample.picture));
+        }
+        self.samples = kept;
+        self.classic_first.remove(&field);
+        self.state.remove(&field);
+        self.rebuild();
+        self.save();
+    }
+
     /// Forget everything: the examples, their pictures, the font.
     pub fn forget(&mut self) {
         for sample in &self.samples {
@@ -1552,8 +1588,12 @@ pub(crate) mod tests {
         assert!(numbers.read(&frame, Field::Hp, &bands[0]).is_none());
         assert!(numbers.wants_sample(Field::Hp, now));
         // A label that disagrees with the bar is not believed.
-        assert!(Numbers::believable(Field::Hp, "HP [100/400]", Some(100.0)).is_err());
-        assert!(Numbers::believable(Field::Hp, "HP [400/400]", Some(100.0)).is_ok());
+        assert!(Numbers::believable(Field::Hp, "HP [100/400]", Some(100.0), false).is_err());
+        assert!(Numbers::believable(Field::Hp, "HP [400/400]", Some(100.0), false).is_ok());
+        // A fitted bar: a label only roughly like it is not believed.
+        assert!(Numbers::believable(Field::Hp, "HP [360/400]", Some(100.0), false).is_ok());
+        assert!(Numbers::believable(Field::Hp, "HP [360/400]", Some(100.0), true).is_err());
+        assert!(Numbers::believable(Field::Hp, "HP [390/400]", Some(100.0), true).is_ok());
         let line = numbers
             .learn(&frame, Field::Hp, &bands[0], "HP [400/400]", "ocr", now)
             .unwrap();

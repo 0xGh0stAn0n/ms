@@ -115,7 +115,7 @@ fn label_from_ocr(sight: &Mutex<Sight>, frame: &RgbaImage, news: &Sender<News>) 
     let now = Instant::now();
     let (fw, fh) = frame.dimensions();
     // What to read, with the sight unlocked while the engine runs.
-    let todo: Vec<(Field, NBox, Option<f32>, crate::vision::Rect)> = {
+    let todo: Vec<(Field, NBox, Option<f32>, bool, crate::vision::Rect)> = {
         let sight = lock();
         let Some(layout) = sight.layout.as_ref().filter(|l| l.fits(fw, fh)) else {
             return;
@@ -133,6 +133,7 @@ fn label_from_ocr(sight: &Mutex<Sight>, frame: &RgbaImage, news: &Sender<News>) 
                     field,
                     bar.band,
                     bar.measure(frame),
+                    !bar.readings.is_empty(),
                     sight.numbers.label_region(field, &bar.band, fw, fh),
                 )
             })
@@ -142,7 +143,7 @@ fn label_from_ocr(sight: &Mutex<Sight>, frame: &RgbaImage, news: &Sender<News>) 
     if todo.is_empty() || !ocr::is_ocr_available() {
         return;
     }
-    for (field, band, bar, region) in todo {
+    for (field, band, bar, fitted, region) in todo {
         lock().numbers.attempted(field, now);
         if !assess_text_quality(frame, region).is_legible() {
             continue;
@@ -150,7 +151,7 @@ fn label_from_ocr(sight: &Mutex<Sight>, frame: &RgbaImage, news: &Sender<News>) 
         let Some(text) = ocr::ocr_region(frame, region.x, region.y, region.w, region.h) else {
             continue;
         };
-        if Numbers::believable(field, &text.text, bar).is_err() {
+        if Numbers::believable(field, &text.text, bar, fitted).is_err() {
             continue;
         }
         if let Ok(line) = lock()
