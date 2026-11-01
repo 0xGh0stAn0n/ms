@@ -903,9 +903,13 @@ const TRUST_MARGIN: f32 = 5.0;
 /// 60% when you handle it, and nobody stays quiet at 3%.
 const TRUST_BOTTOM: f32 = 0.5;
 
-/// How long after a line was said the phone may still hand it back as heard,
-/// in seconds: the line, its playing, and the phone's recognition finishing.
-const ECHO_WINDOW: f64 = 30.0;
+/// How long after a line has been said (its estimated end: see
+/// [`OWN_SECS_PER_WORD`]) the phone may still hand it back as heard, in
+/// seconds: the owner's echoes came 1–7 s after a line ended. A flat 30 s
+/// from when it was noted kept a short line's words "said" long after:
+/// the player who then asked what it had just offered ("how long until I
+/// level", after the help) was taken for its echo and not answered.
+const ECHO_TAIL: f64 = 8.0;
 
 /// Its own voice is never the player ([`Companion::own_words`]): a heard
 /// sentence whose words are mostly — this share or more — words it said in
@@ -930,6 +934,14 @@ const OWN_SECS_PER_WORD: f64 = 0.4;
 const QUESTION_WORDS: &[&str] = &[
     "where", "wheres", "what", "whats", "how", "hows", "why", "which", "who", "whos", "when",
 ];
+
+/// Whether a line noted at `at` may still come back through the phone at
+/// `now`: from just before it was noted until [`ECHO_TAIL`] after its
+/// estimated end.
+fn may_echo(now: f64, at: f64, said: &str) -> bool {
+    let end = at + OWN_LEAD_SECS + OWN_SECS_PER_WORD * said.split(' ').count() as f64;
+    now >= at - 1.0 && now <= end + ECHO_TAIL
+}
 
 /// Edits (insertions, deletions, substitutions) from `a` to `b`, by letter.
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -2784,8 +2796,8 @@ impl Companion {
         let recent: Vec<(f64, Vec<&str>)> = self
             .spoken
             .iter()
+            .filter(|(t, said)| may_echo(now, *t, said))
             .map(|(t, said)| (now - t, said.split(' ').collect::<Vec<_>>()))
-            .filter(|(age, _)| (-1.0..=ECHO_WINDOW).contains(age))
             .collect();
         if recent.is_empty() {
             return Some(heard.to_string());
@@ -2911,7 +2923,7 @@ impl Companion {
         let lines: Vec<&str> = self
             .spoken
             .iter()
-            .filter(|(t, _)| (-1.0..=ECHO_WINDOW).contains(&(now - t)))
+            .filter(|(t, said)| may_echo(now, *t, said))
             .map(|(_, said)| said.as_str())
             .collect();
         let said: std::collections::HashSet<&str> =
@@ -8947,6 +8959,25 @@ mod tests {
                 "ok chat so today we are farming the monkey forest until sixty"
             ))
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn asking_what_it_just_offered_is_answered_once_its_voice_is_gone() {
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.observe(0.0, frame(82.0, 40.0, 13.25));
+        let help = "Just talk to me. Ask how you're doing, about your HP, MP, EXP or level, or how long until you level.";
+        c.remember_spoken(1.0, help);
+        // While it says it and just after, its own words are its echo.
+        assert_eq!(c.strip_echo(6.0, "how long until you level"), None);
+        // The line (about 9 s) is long over: the player is asking.
+        assert_eq!(
+            c.strip_echo(22.0, "how long until I level").as_deref(),
+            Some("how long until I level")
+        );
+        assert_eq!(
+            c.strip_echo(25.0, "about my HP").as_deref(),
+            Some("about my HP")
         );
     }
 
