@@ -4,13 +4,15 @@
   "hold_decay_while_losing_hp_for_s": 4.0,
   "events": {
     "hp_lost_per_percent": 0.03,
-    "hp_under_half_per_second": 0.04,
-    "_hp_under_half_per_second": "only while HP fell within hold_decay_while_losing_hp_for_s",
+    "hp_low_percent": 50.0,
+    "hp_low_per_second": 0.04,
+    "_hp_low_per_second": "per second with HP under hp_low_percent, only while HP fell within hold_decay_while_losing_hp_for_s",
     "death": 1.2,
     "scene_cut": 0.12,
     "activity_per_second": 0.25
   },
   "activity_floor": 0.002,
+  "at_most": 3.0,
   "away_after_s": 90.0,
   "bands": [
     { "id": "peak", "at_least": 0.9 },

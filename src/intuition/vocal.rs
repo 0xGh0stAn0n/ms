@@ -8,7 +8,9 @@
 //! a few quiet harmonics, a little vibrato, soft edges, a breath of noise —
 //! at the voice's own 24 kHz, so it plays through the same path as a line.
 //! Zero inference, zero latency, and the owner (a pianist) writes the
-//! leitmotifs.
+//! leitmotifs. A hum follows a thought, and the player's window to answer
+//! opens when it ends, so a tune is a phrase of a few seconds
+//! ([`LONGEST_S`]), not a song.
 
 use std::sync::OnceLock;
 
@@ -18,6 +20,9 @@ const DATA: &str = include_str!("melodies.json");
 
 /// A rest, in the data.
 const REST: &str = "-";
+/// No tune runs longer than this, in seconds (the data is tested against
+/// it): the hum sits between a thought and the player's chance to answer.
+pub const LONGEST_S: f32 = 6.0;
 
 /// A note: a pitch ("G4", "F#4", "Bb3") or a rest, and its length in beats.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -65,6 +70,17 @@ impl Melodies {
     pub fn named(&self, id: &str) -> Option<&Melody> {
         self.melodies.iter().find(|m| m.id == id)
     }
+}
+
+/// The tune named `id`, hummed — made once, the first time any is asked
+/// for, and kept: a hum is asked for from the frame loop, where a million
+/// sines would be felt.
+pub fn hummed(id: &str) -> Option<&'static [i16]> {
+    static HUMMED: OnceLock<Vec<Vec<i16>>> = OnceLock::new();
+    let melodies = Melodies::get();
+    let at = melodies.melodies.iter().position(|m| m.id == id)?;
+    let all = HUMMED.get_or_init(|| melodies.all().iter().map(hum).collect());
+    all.get(at).map(Vec::as_slice)
 }
 
 /// The frequency of a pitch name ("A4" is 440 Hz); None for a rest or a
@@ -180,9 +196,10 @@ mod tests {
         for melody in m.all() {
             assert_eq!(melody.rights, "original", "{}", melody.id);
             assert!(
-                melody.seconds() > 2.0 && melody.seconds() < 20.0,
-                "{}",
-                melody.id
+                melody.seconds() > 2.0 && melody.seconds() <= LONGEST_S,
+                "{}: {:.1} s",
+                melody.id,
+                melody.seconds()
             );
             for note in &melody.notes {
                 assert!(note.1 > 0.0, "{}: {:?}", melody.id, note);
@@ -231,5 +248,9 @@ mod tests {
         // It starts from silence and ends in it.
         assert!(samples[0].unsigned_abs() < 200);
         assert!(samples.last().unwrap().unsigned_abs() < 400);
+        // The kept one is the same sound, and a name that is no tune is
+        // none.
+        assert_eq!(hummed("morning-leaf"), Some(samples.as_slice()));
+        assert!(hummed("ellinia-theme").is_none());
     }
 }

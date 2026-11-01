@@ -70,8 +70,10 @@ impl Tempo {
 pub struct Events {
     /// Per percent of HP lost between two readings.
     pub hp_lost_per_percent: f32,
-    /// Per second with HP under half.
-    pub hp_under_half_per_second: f32,
+    /// HP under this percent is low.
+    pub hp_low_percent: f32,
+    /// Per second with HP low (while it fell lately).
+    pub hp_low_per_second: f32,
     pub death: f32,
     pub scene_cut: f32,
     /// Per second, times the scene's activity (0–1).
@@ -94,6 +96,9 @@ pub struct Tuning {
     pub events: Events,
     /// Below this much going on, nobody is playing.
     pub activity_floor: f32,
+    /// The intensity's ceiling (a long fight does not take minutes to
+    /// come down from).
+    pub at_most: f32,
     /// Nothing going on for this long (nor the game in view) is away.
     pub away_after_s: f64,
     /// The bands, highest first; the first whose floor the intensity
@@ -182,11 +187,11 @@ impl Intensity {
         // at low HP in town does not — the companion's warnings are for
         // that.
         if let Some(hp) = w.hp
-            && hp < 50.0
+            && hp < t.events.hp_low_percent
             && !w.dead
             && now < self.losing_until
         {
-            self.value += t.events.hp_under_half_per_second * dt;
+            self.value += t.events.hp_low_per_second * dt;
         }
         if w.dead && !self.was_dead {
             self.value += t.events.death;
@@ -201,7 +206,7 @@ impl Intensity {
         if now >= self.losing_until {
             self.value *= t.decay_per_second.powf(dt);
         }
-        self.value = self.value.clamp(0.0, 3.0);
+        self.value = self.value.clamp(0.0, t.at_most);
         // Away: nothing going on for a while, nobody talking.
         if w.activity <= t.activity_floor && !w.talking {
             let since = *self.quiet_since.get_or_insert(now);

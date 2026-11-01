@@ -30,11 +30,8 @@ pub struct World {
     pub seen: bool,
     pub place: Option<Place>,
     pub level: Option<u32>,
-    pub job: Option<String>,
-    /// HP, MP and EXP in percent, when read this frame.
+    /// HP in percent, when read this frame.
     pub hp: Option<f32>,
-    pub mp: Option<f32>,
-    pub exp: Option<f32>,
     /// The character is dead (HP at zero), until it comes back.
     pub dead: bool,
     /// How much the picture moves (the scene fingerprint's activity, 0–1).
@@ -56,8 +53,6 @@ pub struct World {
     pub session_s: f64,
     /// They play MapleStory Classic World.
     pub classic: bool,
-    /// Deaths in the last ten minutes.
-    pub deaths_lately: u32,
 }
 
 impl Default for World {
@@ -67,10 +62,7 @@ impl Default for World {
             seen: false,
             place: None,
             level: None,
-            job: None,
             hp: None,
-            mp: None,
-            exp: None,
             dead: false,
             activity: 0.0,
             scene_cut: false,
@@ -81,7 +73,6 @@ impl Default for World {
             muted: false,
             session_s: 0.0,
             classic: false,
-            deaths_lately: 0,
         }
     }
 }
@@ -105,7 +96,9 @@ impl World {
 pub enum Boundary {
     /// The game came (back) into view.
     GameSeen,
-    /// The map name changed to a fresh reading.
+    /// A fresh reading names another map than the last reading did (the
+    /// same name read again, however long after, is not a boundary: the
+    /// sight refreshes a name now and then while they stay).
     MapEntered,
     /// The level went up.
     LevelUp,
@@ -141,7 +134,10 @@ impl Trail {
                 crossed.push(Boundary::GameSeen);
             }
             if let Some(map) = world.map()
-                && last.map() != Some(map)
+                && !last
+                    .place
+                    .as_ref()
+                    .is_some_and(|p| super::hooks::same_place(&p.name, map))
             {
                 crossed.push(Boundary::MapEntered);
             }
@@ -217,6 +213,15 @@ mod tests {
         let stale = in_map(4.0, "Ellinia", PLACE_FRESH_S + 1.0);
         assert_eq!(stale.map(), None);
         assert_eq!(trail.step(&stale), vec![]);
+        // The same name read afresh after that: they never left, so no
+        // boundary (grinding a quarter of an hour on one map).
+        assert_eq!(trail.step(&in_map(5.0, "Ellinia", 0.0)), vec![]);
+        assert_eq!(trail.step(&in_map(6.0, "ellinia", 0.0)), vec![]);
+        // Another name read afresh is.
+        assert_eq!(
+            trail.step(&in_map(7.0, "Perion", 0.0)),
+            vec![Boundary::MapEntered]
+        );
     }
 
     #[test]

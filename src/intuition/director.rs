@@ -41,18 +41,23 @@ pub struct Level {
     pub threshold: f64,
     /// The pacing's gaps are multiplied by this.
     pub gap_factor: f64,
-    pub at_most_per_10_min: u32,
+    /// At most this many thoughts in [`Pacing::cap_window_s`].
+    pub at_most_per_window: u32,
 }
 
 /// The director's pacing (`initiative.json`), in seconds and ratings.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Pacing {
+    /// The window the levels' cap counts in.
+    pub cap_window_s: f64,
     pub min_gap_after_anyone_spoke_s: f64,
     pub min_gap_between_own_thoughts_s: f64,
     /// The game newly in view gets this long before the first thought.
     pub settle_in_s: f64,
     pub silence_boost_per_s: f64,
     pub silence_boost_at_most: f64,
+    /// What is left of a thought's wish right after its topic was spoken.
+    pub spoken_topic_floor: f64,
     /// Right after a boundary of play, for this long, a thought's wish gets
     /// this bonus.
     pub boundary_window_s: f64,
@@ -129,6 +134,7 @@ impl Initiative {
         Weights {
             silence_boost_per_s: self.pacing.silence_boost_per_s,
             silence_boost_at_most: self.pacing.silence_boost_at_most,
+            spoken_topic_floor: self.pacing.spoken_topic_floor,
         }
     }
 }
@@ -153,10 +159,19 @@ pub struct Stats {
     pub rejected: u32,
 }
 
+/// A thought handed to the voice, until the player's answer (or none)
+/// settles what became of it.
 #[derive(Debug, Clone)]
 struct Awaiting {
     hook: String,
-    said_at: f64,
+    topic: String,
+    /// What the topic's last time was before this one (to put back when the
+    /// thought turns out not to have been said).
+    topic_before: Option<f64>,
+    /// When the voice finished saying it; None while it is still being
+    /// made. The player's window runs from here, not from the decision: a
+    /// line takes seconds to make and say, and a hum after it longer.
+    heard_at: Option<f64>,
 }
 
 /// Why nothing was said this frame, for the log.
@@ -185,6 +200,9 @@ pub struct Director {
     /// When the last boundary of play was crossed.
     boundary_at: f64,
     awaiting: Option<Awaiting>,
+    /// What became of the last thought, and when it was heard (so a "shh"
+    /// right after an answer still counts against the thought).
+    last_outcome: Option<(Outcome, f64)>,
     /// The gaps' multiplier from thoughts let pass (1.0: none).
     backoff: f64,
     seen_since: Option<f64>,
@@ -206,6 +224,7 @@ impl Director {
             spoken_at: VecDeque::new(),
             boundary_at: f64::NEG_INFINITY,
             awaiting: None,
+            last_outcome: None,
             backoff: 1.0,
             seen_since: None,
             stats: Stats::default(),
@@ -289,10 +308,14 @@ impl Director {
         {
             return Err(Hold::TooSoon);
         }
-        while self.spoken_at.front().is_some_and(|at| now - at > 600.0) {
+        while self
+            .spoken_at
+            .front()
+            .is_some_and(|at| now - at > p.cap_window_s)
+        {
             self.spoken_at.pop_front();
         }
-        if self.spoken_at.len() >= level.at_most_per_10_min as usize {
+        if self.spoken_at.len() >= level.at_most_per_window as usize {
             return Err(Hold::TooMany);
         }
         let penalty = dial.penalty(tempo);
@@ -327,42 +350,99 @@ impl Director {
         pool.take(id).ok_or(Hold::NothingReady)
     }
 
-    /// `thought` was said at `now`.
+    /// `thought` goes to the voice at `now`. The player's window opens
+    /// when [`Director::voiced`] says the voice is done; a thought that
+    /// never made a sound is taken back with [`Director::unsaid`].
     pub fn said(&mut self, thought: &Thought, now: f64) {
-        self.topic_spoken.insert(thought.topic.clone(), now);
+        let topic_before = self.topic_spoken.insert(thought.topic.clone(), now);
         self.hooks_spoken.insert(thought.hook.clone());
         self.last_thought_at = now;
         self.spoken_at.push_back(now);
         self.awaiting = Some(Awaiting {
             hook: thought.hook.clone(),
-            said_at: now,
+            topic: thought.topic.clone(),
+            topic_before,
+            heard_at: None,
         });
         self.stats.spoken += 1;
     }
 
-    /// The player said something: an answer to the last thought when it is
-    /// within the window (the gaps shrink back to normal).
-    pub fn player_spoke(&mut self, now: f64) -> Option<Outcome> {
-        let p = &Initiative::get().pacing;
-        let waiting = self.awaiting.take()?;
-        if now - waiting.said_at <= p.response_window_s {
-            self.backoff = 1.0;
-            self.stats.engaged += 1;
-            Some(Outcome::Engaged)
-        } else {
-            self.ignored();
-            Some(Outcome::Ignored)
+    /// The voice finished the thought (and its hum) at `now`: from here the
+    /// player has the window to answer.
+    pub fn voiced(&mut self, now: f64) {
+        if let Some(a) = self.awaiting.as_mut()
+            && a.heard_at.is_none()
+        {
+            a.heard_at = Some(now);
         }
     }
 
-    /// The player asked for quiet after a thought: the gaps go to their
-    /// longest.
-    pub fn told_to_stop(&mut self) -> Outcome {
+    /// The thought handed to the voice was never said (called off before a
+    /// sound, or the voice failed): as if it had not been decided. Its
+    /// hook stays open and its topic as fresh as it was.
+    pub fn unsaid(&mut self) {
+        let Some(a) = self.awaiting.take() else {
+            return;
+        };
+        if a.heard_at.is_some() {
+            // (It was heard after all: nothing to take back.)
+            self.awaiting = Some(a);
+            return;
+        }
+        match a.topic_before {
+            Some(at) => {
+                self.topic_spoken.insert(a.topic, at);
+            }
+            None => {
+                self.topic_spoken.remove(&a.topic);
+            }
+        }
+        self.hooks_spoken.remove(&a.hook);
+        self.spoken_at.pop_back();
+        self.stats.spoken = self.stats.spoken.saturating_sub(1);
+    }
+
+    /// The player said something: an answer to the last thought when it is
+    /// within the window of its being heard (the gaps shrink back to
+    /// normal); nothing is settled by words said before it was heard.
+    pub fn player_spoke(&mut self, now: f64) -> Option<Outcome> {
         let p = &Initiative::get().pacing;
+        let heard_at = self.awaiting.as_ref()?.heard_at?;
         self.awaiting = None;
+        let outcome = if now - heard_at <= p.response_window_s {
+            self.backoff = 1.0;
+            self.stats.engaged += 1;
+            Outcome::Engaged
+        } else {
+            self.ignored();
+            Outcome::Ignored
+        };
+        self.last_outcome = Some((outcome, heard_at));
+        Some(outcome)
+    }
+
+    /// The player asked for quiet at `now`: the gaps go to their longest.
+    /// Counted against the last thought when one was heard within the
+    /// window (even one their words just before had counted as answered);
+    /// None when no thought was near.
+    pub fn told_to_stop(&mut self, now: f64) -> Option<Outcome> {
+        let p = &Initiative::get().pacing;
         self.backoff = p.ignored_backoff_at_most;
+        let near = match (self.awaiting.take(), self.last_outcome) {
+            (Some(_), _) => true,
+            (None, Some((Outcome::Engaged, heard_at))) if now - heard_at <= p.response_window_s => {
+                // Their "shh" was the answer, not whatever came before it.
+                self.stats.engaged = self.stats.engaged.saturating_sub(1);
+                true
+            }
+            _ => false,
+        };
+        if !near {
+            return None;
+        }
         self.stats.rejected += 1;
-        Outcome::Rejected
+        self.last_outcome = Some((Outcome::Rejected, now));
+        Some(Outcome::Rejected)
     }
 
     /// The hook of the thought waiting for an answer, if one is.
@@ -373,13 +453,12 @@ impl Director {
     /// A thought's window closed with no word: let pass.
     fn settle(&mut self, now: f64) -> Option<Outcome> {
         let p = &Initiative::get().pacing;
-        if self
-            .awaiting
-            .as_ref()
-            .is_some_and(|a| now - a.said_at > p.response_window_s)
+        if let Some(heard_at) = self.awaiting.as_ref().and_then(|a| a.heard_at)
+            && now - heard_at > p.response_window_s
         {
             self.awaiting = None;
             self.ignored();
+            self.last_outcome = Some((Outcome::Ignored, heard_at));
             return Some(Outcome::Ignored);
         }
         None
@@ -407,7 +486,6 @@ mod tests {
             kind: Kind::Opinion,
             text: format!("t{id}"),
             rating,
-            interest: 6.0,
             basis: Basis {
                 map: None,
                 level: None,
@@ -443,13 +521,15 @@ mod tests {
         for pair in dial.levels().windows(2) {
             assert!(pair[0].threshold > pair[1].threshold);
             assert!(pair[0].gap_factor > pair[1].gap_factor);
-            assert!(pair[0].at_most_per_10_min <= pair[1].at_most_per_10_min);
+            assert!(pair[0].at_most_per_window <= pair[1].at_most_per_window);
         }
         assert!(dial.penalty(Tempo::Combat) >= PENALTY_IS_SILENCE);
         assert!(dial.penalty(Tempo::Peak) >= PENALTY_IS_SILENCE);
         assert!(dial.penalty(Tempo::Away) >= PENALTY_IS_SILENCE);
         assert!(dial.penalty(Tempo::Calm) < dial.penalty(Tempo::Travel));
         assert!(dial.pacing.response_window_s > 0.0 && dial.pacing.ignored_backoff_factor > 1.0);
+        assert!(dial.pacing.cap_window_s >= 60.0);
+        assert!((0.0..1.0).contains(&dial.pacing.spoken_topic_floor));
         assert_eq!(dial.index(" NORMAL "), Some(1));
         assert_eq!(dial.index("loud"), None);
     }
@@ -564,54 +644,137 @@ mod tests {
         let t = thought(1, "henesys-music", "music", 5.0);
         d.said(&t, 100.0);
         assert_eq!(d.awaiting(), Some("henesys-music"));
-        // The player answers within the window: engaged.
+        // Words while the line is still being made settle nothing.
+        assert_eq!(d.player_spoke(101.0), None);
+        assert_eq!(d.awaiting(), Some("henesys-music"));
+        // The voice is done at 106 (a line and a hum); the player answers
+        // within the window of that: engaged.
+        d.voiced(106.0);
         assert_eq!(
-            d.player_spoke(100.0 + p.response_window_s - 1.0),
+            d.player_spoke(106.0 + p.response_window_s - 1.0),
             Some(Outcome::Engaged)
         );
         assert_eq!(d.backoff(), 1.0);
         assert_eq!(d.awaiting(), None);
         assert_eq!(d.player_spoke(200.0), None);
-        // Said again and let pass: the gaps stretch.
+        // Said again and let pass: the gaps stretch — counted from when it
+        // was heard, not from the decision.
         d.said(&t, 300.0);
+        d.voiced(310.0);
         let mut pool = Pool::new();
         let _ = d.consider(
             &calm(300.0 + p.response_window_s + 1.0, 50.0),
             Tempo::Calm,
             &mut pool,
         );
+        assert_eq!(d.stats.ignored, 0, "the window had not closed yet");
+        let _ = d.consider(
+            &calm(310.0 + p.response_window_s + 1.0, 50.0),
+            Tempo::Calm,
+            &mut pool,
+        );
         assert!((d.backoff() - p.ignored_backoff_factor).abs() < 1e-9);
         assert_eq!(d.stats.ignored, 1);
-        // Asked to stop: the longest gaps.
+        // Asked to stop right after one: the longest gaps, and it counts
+        // against the thought.
         d.said(&t, 400.0);
-        assert_eq!(d.told_to_stop(), Outcome::Rejected);
+        d.voiced(404.0);
+        assert_eq!(d.told_to_stop(406.0), Some(Outcome::Rejected));
         assert!((d.backoff() - p.ignored_backoff_at_most).abs() < 1e-9);
         assert_eq!(d.stats.spoken, 3);
         assert_eq!(d.stats.engaged, 1);
         assert_eq!(d.stats.rejected, 1);
+        // "Shh" with no thought near: the gaps still go to their longest,
+        // but no thought is blamed.
+        d.backoff = 1.0;
+        assert_eq!(d.told_to_stop(900.0), None);
+        assert!((d.backoff() - p.ignored_backoff_at_most).abs() < 1e-9);
+        assert_eq!(d.stats.rejected, 1);
     }
 
     #[test]
-    fn no_more_than_the_dial_allows_in_ten_minutes() {
+    fn a_shh_right_after_an_answer_counts_against_the_thought_not_for_it() {
+        // "Stop coaching" is heard as words first; the words count as an
+        // answer, then the command arrives: the answer is taken back.
         let mut d = Director::new(Some("normal"));
-        let at_most = d.level().at_most_per_10_min;
+        let t = thought(1, "henesys-music", "music", 5.0);
+        d.said(&t, 100.0);
+        d.voiced(104.0);
+        assert_eq!(d.player_spoke(105.0), Some(Outcome::Engaged));
+        assert_eq!(d.told_to_stop(105.0), Some(Outcome::Rejected));
+        assert_eq!(d.stats.engaged, 0);
+        assert_eq!(d.stats.rejected, 1);
+    }
+
+    #[test]
+    fn a_thought_that_never_made_a_sound_is_taken_back_whole() {
+        let mut d = Director::new(Some("normal"));
+        let p = &Initiative::get().pacing;
+        d.topic_spoken.insert("plan".into(), 50.0);
+        let t = thought(1, "kerning-pq-suggestion", "plan", 5.0);
+        d.said(&t, 100.0);
+        assert!(!d.hook_open("kerning-pq-suggestion"));
+        assert_eq!(d.stats.spoken, 1);
+        // The player talked over it before a sound was made.
+        d.unsaid();
+        assert!(
+            d.hook_open("kerning-pq-suggestion"),
+            "a once hook not said is still open"
+        );
+        assert_eq!(d.stats.spoken, 0);
+        assert_eq!(d.awaiting(), None);
+        assert_eq!(
+            d.topic_spoken.get("plan"),
+            Some(&50.0),
+            "the topic is as fresh as before"
+        );
+        assert!(d.spoken_at.is_empty(), "nothing counts towards the cap");
+        // Once heard, there is nothing to take back.
+        d.said(&t, 200.0);
+        d.voiced(203.0);
+        d.unsaid();
+        assert_eq!(d.stats.spoken, 1);
+        assert_eq!(d.awaiting(), Some("kerning-pq-suggestion"));
+        let _ = d.consider(
+            &calm(203.0 + p.response_window_s + 1.0, 50.0),
+            Tempo::Calm,
+            &mut Pool::new(),
+        );
+        assert_eq!(d.stats.ignored, 1);
+    }
+
+    #[test]
+    fn no_more_than_the_dial_allows_in_the_window() {
+        let mut d = Director::new(Some("normal"));
+        let p = &Initiative::get().pacing;
+        let at_most = d.level().at_most_per_window;
         let t = thought(1, "town-breather", "mood", 5.0);
         for i in 0..at_most {
             d.said(&t, 100.0 + i as f64);
+            d.voiced(100.0 + i as f64);
         }
         let mut pool = Pool::new();
         pool.add(thought(9, "back-from-away", "mood", 5.0));
-        let settle = Initiative::get().pacing.settle_in_s;
         d.consider(&calm(0.0, 100.0), Tempo::Calm, &mut pool).ok();
         assert_eq!(
-            d.consider(&calm(100.0 + settle + 400.0, 400.0), Tempo::Calm, &mut pool),
+            d.consider(
+                &calm(100.0 + p.settle_in_s + 400.0, 400.0),
+                Tempo::Calm,
+                &mut pool
+            ),
             Err(Hold::TooMany)
         );
-        // Ten minutes on, the cap has passed; the gaps from the ignored
-        // thoughts have not, so the pool is still untouched here.
-        assert_ne!(
-            d.consider(&calm(100.0 + 601.0, 601.0), Tempo::Calm, &mut pool),
-            Err(Hold::TooMany)
+        // The window on, the cap has passed: the gaps from the thoughts let
+        // pass are long, but they are the next hold, not the cap.
+        d.backoff = 1.0;
+        let later = 100.0 + p.cap_window_s + 1.0;
+        assert_eq!(
+            d.consider(&calm(later, 1.0), Tempo::Calm, &mut pool),
+            Err(Hold::TooSoon)
+        );
+        assert!(
+            d.consider(&calm(later, p.cap_window_s), Tempo::Calm, &mut pool)
+                .is_ok()
         );
     }
 }

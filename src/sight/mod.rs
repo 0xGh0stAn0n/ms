@@ -1685,7 +1685,6 @@ cannot read them",
         }
     }
 
-    /// Everything the learned sight knows, as lines for the conversation.
     /// The map's name as last read or told, and how long ago that was (the
     /// intuition decides for itself how old is too old).
     pub fn place(&self) -> Option<(String, Duration)> {
@@ -1694,6 +1693,7 @@ cannot read them",
         Some((name, at.elapsed()))
     }
 
+    /// Everything the learned sight knows, as lines for the conversation.
     pub fn describe(&self) -> Vec<String> {
         let mut lines = Vec::new();
         let f = &self.facts;

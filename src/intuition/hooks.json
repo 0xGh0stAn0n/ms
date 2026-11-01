@@ -185,19 +185,6 @@
       "facts": {},
       "notes": ["They spoke after a long quiet: a short, warm word — never a question about where they were."],
       "sources": []
-    },
-    {
-      "id": "taste-callback",
-      "when": "taste_match",
-      "where": { "tempo_at_most": "travel" },
-      "topic": "callback",
-      "kind": "callback",
-      "interest": 8,
-      "odds": 0.9,
-      "once_per_session": true,
-      "facts": {},
-      "notes": ["The player once said what they like about where they are now (a map's music, a boss, a town): bring it up as a friend who remembered, in one clause."],
-      "sources": []
     }
   ]
 }

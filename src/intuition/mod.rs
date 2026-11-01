@@ -50,7 +50,7 @@ pub mod thoughts;
 pub mod vocal;
 pub mod world;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 pub use director::{Director, Hold, Outcome};
 pub use hooks::{Hook, Hooks, Kind, Persona, Trigger};
@@ -138,10 +138,9 @@ pub struct Intuition {
     last_plan_at: f64,
     /// Cues held for the mind's pace.
     waiting: VecDeque<Cue>,
-    /// The calm-stretch hooks already thought about in this calm.
-    calm_thought: bool,
-    /// Thoughts said so far (ids come from the mind).
-    pub said: u32,
+    /// The calm-stretch hooks whose odds were rolled in this calm (each
+    /// gets one roll per calm, when its own wait is up).
+    calm_rolled: HashSet<String>,
 }
 
 impl Intuition {
@@ -160,8 +159,7 @@ impl Intuition {
             last_cue_at: f64::NEG_INFINITY,
             last_plan_at: f64::NEG_INFINITY,
             waiting: VecDeque::new(),
-            calm_thought: false,
-            said: 0,
+            calm_rolled: HashSet::new(),
         }
     }
 
@@ -184,7 +182,7 @@ impl Intuition {
             self.calm_since.get_or_insert(now);
         } else {
             self.calm_since = None;
-            self.calm_thought = false;
+            self.calm_rolled.clear();
         }
         let boundaries = self.trail.step(world);
         if !self.on {
@@ -192,9 +190,10 @@ impl Intuition {
         }
         for (thought, why) in self.pool.prune(world, self.tempo) {
             acts.push(Act::Note(format!(
-                "dropped \"{}\" ({}): {why}",
+                "dropped \"{}\" ({}): {}",
                 thought.hook,
-                thought.kind.word()
+                thought.kind.word(),
+                why.word()
             )));
         }
         // What happened: the hooks it fires.
@@ -210,15 +209,17 @@ impl Intuition {
                 self.cue(trigger, world, calm_for, plan, hooks);
             }
         }
-        // A long calm: once per calm.
-        if !self.calm_thought
-            && hooks
-                .all()
-                .iter()
-                .any(|h| h.when == Trigger::CalmStretch && h.applies(world, self.tempo, calm_for))
-        {
-            self.calm_thought = true;
-            self.cue(Trigger::CalmStretch, world, calm_for, false, hooks);
+        // A long calm: each calm-stretch hook gets its roll once per calm,
+        // when its own wait is up (a town breather at two and a half
+        // minutes, "what next" at four), so a later one is not spent by an
+        // earlier one's roll.
+        if hooks.all().iter().any(|h| {
+            h.when == Trigger::CalmStretch
+                && !self.calm_rolled.contains(&h.id)
+                && h.applies(world, self.tempo, calm_for)
+        }) {
+            let rolled = self.cue(Trigger::CalmStretch, world, calm_for, false, hooks);
+            self.calm_rolled.extend(rolled);
         }
         // The standing plan, now and then.
         if world.seen && now - self.last_plan_at >= PLAN_EVERY_S && self.waiting.is_empty() {
@@ -244,7 +245,6 @@ impl Intuition {
         // Whether a thought is said now.
         if let Ok(thought) = self.director.consider(world, self.tempo, &mut self.pool) {
             self.director.said(&thought, now);
-            self.said += 1;
             let hum = thought.hum.clone();
             acts.push(Act::Say(thought));
             if let Some(melody) = hum {
@@ -255,17 +255,33 @@ impl Intuition {
     }
 
     /// The hooks `trigger` fires now, each kept with its odds, go to the
-    /// mind as one cue (with the plan when `plan`).
-    fn cue(&mut self, trigger: Trigger, world: &World, calm_for: f64, plan: bool, hooks: &Hooks) {
-        let matched: Vec<String> = hooks
-            .matching(trigger, world, self.tempo, calm_for)
-            .into_iter()
-            .filter(|h| self.director.hook_open(&h.id))
-            .filter(|h| self.dice.chance(h.odds))
-            .map(|h| h.id.clone())
-            .collect();
+    /// mind as one cue (with the plan when `plan`). Returns the ids of the
+    /// hooks whose odds were rolled (for the calm stretch, where a hook
+    /// gets one roll per calm: for the CalmStretch trigger only the hooks
+    /// not rolled in this calm are rolled).
+    fn cue(
+        &mut self,
+        trigger: Trigger,
+        world: &World,
+        calm_for: f64,
+        plan: bool,
+        hooks: &Hooks,
+    ) -> Vec<String> {
+        let mut rolled = Vec::new();
+        let mut matched = Vec::new();
+        for hook in hooks.matching(trigger, world, self.tempo, calm_for) {
+            if !self.director.hook_open(&hook.id)
+                || (trigger == Trigger::CalmStretch && self.calm_rolled.contains(&hook.id))
+            {
+                continue;
+            }
+            rolled.push(hook.id.clone());
+            if self.dice.chance(hook.odds) {
+                matched.push(hook.id.clone());
+            }
+        }
         if matched.is_empty() && !plan {
-            return;
+            return rolled;
         }
         // One cue per trigger waits at a time; a newer one replaces it.
         self.waiting.retain(|c| c.trigger != trigger);
@@ -276,6 +292,7 @@ impl Intuition {
             tempo: self.tempo,
             plan,
         });
+        rolled
     }
 
     /// The cue whose turn it is, if any: one with a boundary's hooks after
@@ -314,10 +331,22 @@ impl Intuition {
         self.director.player_spoke(now)
     }
 
-    /// The player asked for quiet.
-    pub fn told_to_stop(&mut self) -> Outcome {
+    /// The voice finished the last thought (and its hum): the player's
+    /// window to answer opens now.
+    pub fn voiced(&mut self, now: f64) {
+        self.director.voiced(now);
+    }
+
+    /// The last thought never made a sound (talked over, or the voice
+    /// failed): as if it had not been decided.
+    pub fn unsaid(&mut self) {
+        self.director.unsaid();
+    }
+
+    /// The player asked for quiet at `now`.
+    pub fn told_to_stop(&mut self, now: f64) -> Option<Outcome> {
         self.waiting.clear();
-        self.director.told_to_stop()
+        self.director.told_to_stop(now)
     }
 
     /// Turn it on or off (off drops what was waiting).
@@ -366,7 +395,6 @@ mod tests {
             kind: h.kind,
             text: format!("t{id}"),
             rating: 4.5,
-            interest: h.interest,
             basis: Basis {
                 map: Some(map.into()),
                 level: Some(25),
@@ -437,11 +465,50 @@ mod tests {
         assert_eq!(thought.hook, "ellinia-music");
         assert_eq!(hummed.as_deref(), Some("morning-leaf"));
         assert!(at >= 46, "{at}");
-        assert_eq!(it.said, 1);
-        // Nobody answered within the window: let pass, and the gaps stretch.
+        // The voice never reported finishing: nothing is settled yet.
         assert_eq!(it.director.stats.spoken, 1);
+        assert_eq!(it.director.stats.ignored, 0);
+        assert_eq!(it.director.awaiting(), Some("ellinia-music"));
+        // It finishes, and nobody answers within the window: let pass, and
+        // the gaps stretch.
+        it.voiced(200.0);
+        for s in 201..230 {
+            it.observe(&frame(s as f64, "Ellinia", 100.0, 0.004));
+        }
         assert_eq!(it.director.stats.ignored, 1);
         assert!(it.director.backoff() > 1.0);
+    }
+
+    #[test]
+    fn a_long_calm_gives_each_calm_hook_its_own_roll_and_what_next_its_turn() {
+        // The town breather (two and a half minutes) must not spend the
+        // roll of "what next" (four minutes): over many seeds, both come
+        // up, and a calm with no cue at all is the exception.
+        let hooks = Hooks::get();
+        let breather = hooks.named("town-breather").unwrap();
+        let what_next = hooks.named("what-next").unwrap();
+        assert!(breather.place.calm_for_s.unwrap() < what_next.place.calm_for_s.unwrap());
+        let (mut breathers, mut what_nexts, mut quiet_calms) = (0, 0, 0);
+        for seed in 0..60u64 {
+            let mut it = Intuition::new(true, None, seed);
+            let mut cued = HashSet::new();
+            // Twenty minutes into a session, ten minutes of calm.
+            for s in 0..600 {
+                let mut w = frame(s as f64, "Henesys", 100.0, 0.004);
+                w.session_s = 1200.0 + s as f64;
+                for act in it.observe(&w) {
+                    if let Act::Think(c) = act {
+                        cued.extend(c.hooks);
+                    }
+                }
+            }
+            breathers += cued.contains("town-breather") as u32;
+            what_nexts += cued.contains("what-next") as u32;
+            quiet_calms += cued.is_empty() as u32;
+        }
+        assert!(breathers > 10, "{breathers}");
+        assert!(what_nexts > 10, "{what_nexts}");
+        assert!(quiet_calms < 30, "{quiet_calms}");
     }
 
     #[test]
@@ -486,11 +553,27 @@ mod tests {
             assert!(acts.is_empty(), "{acts:?}");
         }
         it.set_on(true);
+        // Into Kerning City: its arrival is a boundary, and with nothing
+        // asked of the mind before, the cue goes to it at once (with the
+        // plan, as a map entered asks).
         let acts = it.observe(&frame(40.0, "Kerning City", 100.0, 0.004));
-        assert!(acts.iter().any(|a| matches!(a, Act::Think(_))) || it.waiting() > 0);
-        it.told_to_stop();
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, Act::Think(c) if c.trigger == Trigger::MapEntered && c.plan)),
+            "{acts:?}"
+        );
+        // Another boundary right after waits for the mind's pace.
+        let mut w = frame(41.0, "Kerning City", 100.0, 0.004);
+        w.level = Some(26);
+        let acts = it.observe(&w);
+        assert!(!acts.iter().any(|a| matches!(a, Act::Think(_))), "{acts:?}");
+        assert_eq!(it.waiting(), 1);
+        // "Shh" before anything was said: the waiting cue goes, the gaps go
+        // to their longest, and no thought is blamed.
+        assert_eq!(it.told_to_stop(42.0), None);
         assert_eq!(it.waiting(), 0);
-        assert_eq!(it.director.stats.rejected, 1);
+        assert_eq!(it.director.stats.rejected, 0);
+        assert!(it.director.backoff() > 1.0);
     }
 
     #[test]

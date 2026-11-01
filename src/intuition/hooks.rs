@@ -38,8 +38,6 @@ pub enum Trigger {
     PlayerBack,
     /// Calm for a while (`where.calm_for_s`).
     CalmStretch,
-    /// The player once said what they like about where they are now.
-    TasteMatch,
 }
 
 impl Trigger {
@@ -65,7 +63,6 @@ impl Trigger {
             Trigger::Revived => "revived",
             Trigger::PlayerBack => "player_back",
             Trigger::CalmStretch => "calm_stretch",
-            Trigger::TasteMatch => "taste_match",
         }
     }
 }
@@ -81,6 +78,8 @@ pub enum Kind {
     /// What it thinks of something, from its taste card.
     Opinion,
     /// Something the player said before, brought up now.
+    /// Picks up what they once said they like (the mind knows it from the
+    /// notebook; any hook's thought may be one).
     Callback,
     /// A short word of company.
     Quip,

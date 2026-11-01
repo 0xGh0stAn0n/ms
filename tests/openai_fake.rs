@@ -1401,9 +1401,7 @@ fn the_standing_plan_goes_into_the_replys_instructions_after_what_it_learned() {
         goal: "level 30".into(),
         next: "the Kerning City party quest".into(),
         why: "fast EXP at this level".into(),
-        map: Some("Henesys".into()),
         level: Some(24),
-        made_at: 0.0,
     };
     worker.send(Job::Plan {
         text: Some(plan.prompt()),

@@ -695,11 +695,7 @@ impl Brain {
     /// Who it is: the part of the instructions that stays the same from one
     /// reply to the next (so OpenAI keeps it cached, and answers sooner).
     pub fn persona(&self) -> String {
-        let mut text = format!(
-            "{PERSONA}\n\n{}\n\n{MORE}\n{}",
-            style::rules(self.level()),
-            who_he_is(self.player_name().as_deref())
-        );
+        let mut text = persona_text(self.level(), self.player_name().as_deref());
         if self.learning.is_none() && !self.about_player.trim().is_empty() {
             text.push_str("\n\nAbout the player (they told you this):\n");
             text.push_str(self.about_player.trim());
@@ -725,15 +721,22 @@ fn player_name_of(learning: Option<&Learning>, about_player: &str) -> Option<Str
     }
 }
 
+/// Who MapleSyrup is: the persona, the bar's rules at `level`, the rest,
+/// and who the player is — the one text [`Brain::persona`] and
+/// [`persona_for`] both start from, so the two lanes never drift apart.
+fn persona_text(level: &Level, player_name: Option<&str>) -> String {
+    format!(
+        "{PERSONA}\n\n{}\n\n{MORE}\n{}",
+        style::rules(level),
+        who_he_is(player_name)
+    )
+}
+
 /// Who MapleSyrup is, as [`Brain::persona`] has it, for a lane that has no
 /// brain of its own (the intuition's mind thinks in the background): the
 /// persona at the bar's level, with the player's name from his own file.
 pub fn persona_for(learning: &Learning) -> String {
-    format!(
-        "{PERSONA}\n\n{}\n\n{MORE}\n{}",
-        style::rules(learning.memory().level()),
-        who_he_is(learning.player_name().as_deref())
-    )
+    persona_text(learning.memory().level(), learning.player_name().as_deref())
 }
 
 impl Brain {

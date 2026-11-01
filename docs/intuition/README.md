@@ -101,7 +101,15 @@ The target the research gives: about half of the thoughts said get a
 word back and no more than one in eight is a disruption (Codellaborator,
 CHI 2025, the best measured profile). The session log's closing
 `[intuition]` line counts answered, let pass and shushed; tune the data
-until the ratio holds.
+until the ratio holds. Those counts are only worth tuning by if they are
+honest, so: the player's window to answer opens when the voice is done
+with the line and its hum (`Done::Voiced`, plus what is still queued to
+play), not when the director decided; a thought talked over before a
+sound was made is taken back whole (its once-per-session hook stays open,
+its topic as fresh as before); MapleSyrup's own voice heard back by the
+phone never counts as an answer (the bookkeeping runs after the echo
+filter); and "stop coaching" right after a thought counts against the
+thought even though its words were heard first.
 
 ## What is not in yet, by design
 
@@ -115,9 +123,18 @@ until the ratio holds.
   `initiative` in `/api/state`, the `set_initiative` tool, the setting in
   the notebook); the page's control is UX work for Yohai.
 - **Thoughts on a live call**: the call relays them as its own (the
-  instructions say so); the hum waits for the PC's voice.
+  instructions say so, and tell a thought from a watcher line by its
+  content; a marker on the relayed line would make that certain, and is
+  the phone page's to add); when the call is done saying one is the call's
+  to know, so on a call the answer window opens at the hand-over; the hum
+  waits for the PC's voice.
 - **Metrics**: the counts are in the log; the session record
   (`metrics.rs`) does not carry them yet.
+- **A callback trigger**: the mind sees the player's tastes and moments
+  from the notebook with every cue, so a callback can ride any hook; a
+  trigger of its own (the player's words naming a place or a tune they
+  like) would need the words matched against data in the player's
+  language, which is not done.
 
 ## Two things the research says to settle before scaling
 

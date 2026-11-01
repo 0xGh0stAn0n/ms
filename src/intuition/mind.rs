@@ -39,9 +39,14 @@ use crate::ai::openai::{AiError, Ask, OpenAi};
 
 /// How many thoughts one cue may yield at most.
 pub const MOST_THOUGHTS: usize = 3;
+/// How many of the player's last sentences the mind is given (the same
+/// conversation, not a transcript).
+pub const LATELY_MOST: usize = 6;
 /// How long a thought may take to be written.
 const TIMEOUT: Duration = Duration::from_secs(25);
-const MAX_OUTPUT_TOKENS: u32 = 500;
+/// Room for three weighed lines in Hebrew and a plan; a cut-off answer
+/// fails the schema and loses the plan with it.
+const MAX_OUTPUT_TOKENS: u32 = 900;
 /// A thought this short is not a thought ("ok.").
 const SHORTEST_THOUGHT: usize = 6;
 
@@ -97,15 +102,16 @@ pub struct Plan {
     pub goal: String,
     pub next: String,
     pub why: String,
-    /// The map and level it was made for (either may be unknown).
-    pub map: Option<String>,
+    /// The level it was made for (None: unknown then).
     pub level: Option<u32>,
-    pub made_at: f64,
 }
 
 impl Plan {
     /// Whether it still fits `world`: the level has not changed (a plan
-    /// outlives a map change; the mind renews it then anyway).
+    /// outlives a map change; the mind renews it then anyway). A plan that
+    /// no longer fits is taken away from the conversation rather than kept
+    /// stale — the Talker-Reasoner failure, a fast side answering from an
+    /// old belief.
     pub fn fits(&self, world: &World) -> bool {
         match (self.level, world.level) {
             (Some(planned), Some(now)) => planned == now,
@@ -345,14 +351,15 @@ pub fn schema() -> Value {
 }
 
 /// The model's answer, as thoughts (each on the cue's basis) and a plan.
-/// `first_id` numbers the thoughts.
+/// The thoughts kept are numbered from `first_id` up, with no gaps (the
+/// ids must be unique across cues: the pool hands a thought back by id).
 pub fn parse(text: &str, cue: &Cue, first_id: u64) -> Result<(Vec<Thought>, Option<Plan>), String> {
     let answer: Answer = serde_json::from_str(text).map_err(|e| format!("not the schema: {e}"))?;
     let hooks = Hooks::get();
     let ttl = Initiative::get().pacing.thought_ttl_s;
     let w = &cue.world;
-    let mut thoughts = Vec::new();
-    for (i, written) in answer.thoughts.into_iter().take(MOST_THOUGHTS).enumerate() {
+    let mut thoughts: Vec<Thought> = Vec::new();
+    for written in answer.thoughts.into_iter().take(MOST_THOUGHTS) {
         // Only a hook of this cue, by its id: a thought about something
         // that did not happen is dropped.
         let Some(hook) = hooks
@@ -370,13 +377,12 @@ pub fn parse(text: &str, cue: &Cue, first_id: u64) -> Result<(Vec<Thought>, Opti
         }
         let about_place = !hook.place.maps.is_empty();
         thoughts.push(Thought {
-            id: first_id + i as u64,
+            id: first_id + thoughts.len() as u64,
             hook: hook.id.clone(),
             topic: hook.topic.clone(),
             kind: hook.kind,
             text: line.to_string(),
             rating: written.rating,
-            interest: hook.interest,
             basis: Basis {
                 map: if about_place {
                     w.map().map(str::to_string)
@@ -403,9 +409,7 @@ pub fn parse(text: &str, cue: &Cue, first_id: u64) -> Result<(Vec<Thought>, Opti
             goal: p.goal,
             next: p.next,
             why: p.why,
-            map: w.map().map(str::to_string),
             level: w.level,
-            made_at: w.now,
         });
     Ok((thoughts, plan))
 }
@@ -460,11 +464,14 @@ pub struct Mind {
 }
 
 impl Mind {
-    /// Start thinking with `chat`, as the MapleSyrup `learning` knows.
-    pub fn spawn(chat: Arc<OpenAi>, learning: Learning) -> Mind {
+    /// Start thinking with `chat`, as the MapleSyrup `learning` knows; None
+    /// when the thread could not be started (then there is no mind, and
+    /// the intuition stays off rather than cueing a thread that never
+    /// answers).
+    pub fn spawn(chat: Arc<OpenAi>, learning: Learning) -> Option<Mind> {
         let (cues, cues_rx) = channel::<(Cue, Context)>();
         let (tx, thinking) = channel::<Thinking>();
-        let _ = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("mind".into())
             .spawn(move || {
                 let mut next_id: u64 = 1;
@@ -485,8 +492,9 @@ impl Mind {
                         }
                     }
                 }
-            });
-        Mind { cues, thinking }
+            })
+            .ok()?;
+        Some(Mind { cues, thinking })
     }
 
     /// Think about `cue` (never waits).
@@ -633,5 +641,20 @@ mod tests {
         assert_eq!(thoughts[0].basis.map, None);
         assert!(plan.is_none());
         assert!(parse("not json", &c, 1).is_err());
+        // Ids are numbered by the thoughts kept, with no gaps: dropped
+        // entries leave no hole, so the next cue's ids follow on without a
+        // clash (the pool hands thoughts back by id).
+        let mut c3 = c.clone();
+        c3.hooks = vec!["ellinia-music".into(), "kerning-pq-suggestion".into()];
+        let text = json!({"thoughts": [
+            {"hook": "nowhere", "kind": "quip", "weighed": "", "text": "A line about nothing that happened.", "rating": 3.0, "hum": false},
+            {"hook": "ellinia-music", "kind": "opinion", "weighed": "", "text": "The piano in this forest is the best in the game.", "rating": 4.0, "hum": false},
+            {"hook": "kerning-pq-suggestion", "kind": "suggestion", "weighed": "", "text": "Let's go do the party quest in Kerning City.", "rating": 4.0, "hum": false}
+        ], "plan": null}).to_string();
+        let (thoughts, _) = parse(&text, &c3, 7).unwrap();
+        assert_eq!(
+            thoughts.iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![7, 8]
+        );
     }
 }

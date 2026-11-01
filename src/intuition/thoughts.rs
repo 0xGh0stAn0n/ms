@@ -38,52 +38,62 @@ pub struct Basis {
     pub ttl_s: f64,
 }
 
+/// What broke a thought's basis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Broken {
+    /// Past its time to live.
+    Stale,
+    /// They are not on the map it is about (or the reading is too old to
+    /// say where they are).
+    LeftTheMap,
+    LevelChanged,
+    Dead,
+    /// The game is tenser than the thought bears — the one break that
+    /// mends by itself when the tempo falls.
+    Tempo,
+}
+
+impl Broken {
+    /// For the log.
+    pub fn word(self) -> &'static str {
+        match self {
+            Broken::Stale => "stale",
+            Broken::LeftTheMap => "left the map",
+            Broken::LevelChanged => "level changed",
+            Broken::Dead => "dead",
+            Broken::Tempo => "tempo",
+        }
+    }
+}
+
 impl Basis {
     /// Whether it still holds in `world` at `tempo`.
     pub fn holds(&self, world: &World, tempo: Tempo) -> bool {
-        if world.now - self.made_at > self.ttl_s {
-            return false;
-        }
-        if let Some(map) = &self.map
-            && world
-                .map()
-                .is_none_or(|m| !super::hooks::same_place(m, map))
-        {
-            return false;
-        }
-        if let (Some(level), Some(now)) = (self.level, world.level)
-            && now != level
-        {
-            return false;
-        }
-        if self.alive && world.dead {
-            return false;
-        }
-        tempo <= self.tempo_at_most && tempo != Tempo::Away
+        self.broken_by(world, tempo).is_none()
     }
 
-    /// Why it does not hold, in a word for the log (None: it holds).
-    pub fn broken_by(&self, world: &World, tempo: Tempo) -> Option<&'static str> {
+    /// What does not hold any more (None: it holds).
+    pub fn broken_by(&self, world: &World, tempo: Tempo) -> Option<Broken> {
         if world.now - self.made_at > self.ttl_s {
-            return Some("stale");
+            return Some(Broken::Stale);
         }
         if let Some(map) = &self.map
             && world
                 .map()
                 .is_none_or(|m| !super::hooks::same_place(m, map))
         {
-            return Some("left the map");
+            return Some(Broken::LeftTheMap);
         }
         if let (Some(level), Some(now)) = (self.level, world.level)
             && now != level
         {
-            return Some("level changed");
+            return Some(Broken::LevelChanged);
         }
         if self.alive && world.dead {
-            return Some("dead");
+            return Some(Broken::Dead);
         }
         if tempo > self.tempo_at_most || tempo == Tempo::Away {
-            return Some("tempo");
+            return Some(Broken::Tempo);
         }
         None
     }
@@ -101,20 +111,21 @@ pub struct Thought {
     pub text: String,
     /// How much it wants to be said, 1–5 (the mind's rating).
     pub rating: f32,
-    /// The hook's own interest, 1–10.
-    pub interest: f32,
     pub basis: Basis,
     /// A melody to hum after it (`melodies.json`), if the hook has one and
     /// the mind felt like it.
     pub hum: Option<String>,
 }
 
-/// What makes a thought want to be said now.
+/// What makes a thought want to be said now (`initiative.json`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Weights {
     /// The boost per second of silence (1.0: none), and its ceiling.
     pub silence_boost_per_s: f64,
     pub silence_boost_at_most: f64,
+    /// What is left of a thought's wish right after its topic was spoken
+    /// (0–1; it climbs back to 1 over the topic's cooldown).
+    pub spoken_topic_floor: f64,
 }
 
 impl Thought {
@@ -122,12 +133,13 @@ impl Thought {
     /// is (`topic_fresh`, 0–1: 0 right after the topic was spoken, 1 once
     /// its cooldown has passed) and by the silence so far.
     pub fn wish(&self, topic_fresh: f64, since_anyone_spoke: f64, w: &Weights) -> f64 {
-        let silence = since_anyone_spoke.clamp(0.0, 3600.0);
         let boost = w
             .silence_boost_per_s
-            .powf(silence)
+            .powf(since_anyone_spoke.max(0.0))
             .min(w.silence_boost_at_most);
-        (self.rating as f64).clamp(1.0, 5.0) * (0.35 + 0.65 * topic_fresh.clamp(0.0, 1.0)) * boost
+        let floor = w.spoken_topic_floor.clamp(0.0, 1.0);
+        let fresh = floor + (1.0 - floor) * topic_fresh.clamp(0.0, 1.0);
+        (self.rating as f64).clamp(1.0, 5.0) * fresh * boost
     }
 }
 
@@ -157,12 +169,12 @@ impl Pool {
     }
 
     /// Drops what no longer holds; returns what was dropped and why.
-    pub fn prune(&mut self, world: &World, tempo: Tempo) -> Vec<(Thought, &'static str)> {
+    pub fn prune(&mut self, world: &World, tempo: Tempo) -> Vec<(Thought, Broken)> {
         let mut dropped = Vec::new();
         self.thoughts
             .retain(|t| match t.basis.broken_by(world, tempo) {
                 // (The tempo may fall again: a thought waits that out.)
-                None | Some("tempo") => true,
+                None | Some(Broken::Tempo) => true,
                 Some(why) => {
                     dropped.push((t.clone(), why));
                     false
@@ -211,7 +223,6 @@ mod tests {
             kind: Kind::Opinion,
             text: format!("thought {id}"),
             rating: 4.0,
-            interest: 6.0,
             basis: Basis {
                 map: map.map(str::to_string),
                 level: Some(25),
@@ -243,25 +254,26 @@ mod tests {
         let w = world(120.0, "Ellinia");
         assert!(t.basis.holds(&w, Tempo::Calm));
         assert!(t.basis.holds(&w, Tempo::Travel));
-        assert_eq!(t.basis.broken_by(&w, Tempo::Combat), Some("tempo"));
+        assert_eq!(t.basis.broken_by(&w, Tempo::Combat), Some(Broken::Tempo));
         assert_eq!(
             t.basis.broken_by(&world(120.0, "Henesys"), Tempo::Calm),
-            Some("left the map")
+            Some(Broken::LeftTheMap)
         );
         let mut leveled = w.clone();
         leveled.level = Some(26);
         assert_eq!(
             t.basis.broken_by(&leveled, Tempo::Calm),
-            Some("level changed")
+            Some(Broken::LevelChanged)
         );
         let mut dead = w.clone();
         dead.dead = true;
-        assert_eq!(t.basis.broken_by(&dead, Tempo::Calm), Some("dead"));
+        assert_eq!(t.basis.broken_by(&dead, Tempo::Calm), Some(Broken::Dead));
         assert_eq!(
             t.basis.broken_by(&world(500.0, "Ellinia"), Tempo::Calm),
-            Some("stale")
+            Some(Broken::Stale)
         );
-        assert_eq!(t.basis.broken_by(&w, Tempo::Away), Some("tempo"));
+        assert_eq!(t.basis.broken_by(&w, Tempo::Away), Some(Broken::Tempo));
+        assert_eq!(Broken::LeftTheMap.word(), "left the map");
     }
 
     #[test]
@@ -270,16 +282,15 @@ mod tests {
         let w = Weights {
             silence_boost_per_s: 1.015,
             silence_boost_at_most: 1.7,
+            spoken_topic_floor: 0.35,
         };
         let fresh_quiet = t.wish(1.0, 0.0, &w);
         assert!((fresh_quiet - 4.0).abs() < 1e-9);
         assert!(t.wish(1.0, 60.0, &w) > fresh_quiet);
         assert!((t.wish(1.0, 3600.0, &w) - 4.0 * 1.7).abs() < 1e-9);
-        assert!(t.wish(0.0, 0.0, &w) < fresh_quiet);
-        assert!(
-            t.wish(0.0, 0.0, &w) > 1.0,
-            "a spoken topic still wants a little"
-        );
+        assert!((t.wish(0.0, 0.0, &w) - 4.0 * 0.35).abs() < 1e-9);
+        // Silence never counted against it (a clock skew, say).
+        assert!((t.wish(1.0, -5.0, &w) - 4.0).abs() < 1e-9);
     }
 
     #[test]
@@ -301,7 +312,7 @@ mod tests {
         pool.add(thought(2, "b", None, 0.0));
         let dropped = pool.prune(&world(10.0, "Henesys"), Tempo::Calm);
         assert_eq!(dropped.len(), 1);
-        assert_eq!(dropped[0].1, "left the map");
+        assert_eq!(dropped[0].1, Broken::LeftTheMap);
         assert_eq!(pool.len(), 1);
         // A tense moment is waited out, not pruned.
         assert!(pool.prune(&world(11.0, "Henesys"), Tempo::Peak).is_empty());
