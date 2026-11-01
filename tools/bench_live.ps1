@@ -41,6 +41,16 @@
   The phone's language the call is set to (default he-IL): every answer is
   checked to be in it.
 
+.PARAMETER Variant
+  A variant of the call's instructions to measure against MapleSyrup's own
+  (a JSON file: as given, or under bench\variants): "replace" is a list of
+  {"find", "with"} applied to the instructions MapleSyrup gives the call
+  (each "find" must be in them exactly once), "prepend" and "append" add
+  text. Nothing in MapleSyrup changes: the bench's call alone is told.
+
+.PARAMETER TtsStyle
+  How the questions are spoken (the voice's instructions).
+
 .PARAMETER UseRunning
   Measure whatever MapleSyrup is running. By default the bench measures the
   one beside it (the build under test): another MapleSyrup running (the
@@ -48,8 +58,13 @@
   was, with its own command line.
 
 .NOTES
-  Besides the questions it plays a room with nobody talking (does the call
-  answer noise?) and talks over a long answer (how soon does it notice?).
+  Besides the questions it plays speech nobody could make out (audio\unclear.pcm,
+  when there: does it say it didn't catch it?), a room with nobody talking
+  (does the call answer noise?), a pause mid-sentence (does it jump in?) and
+  talks over a long answer (how soon does it notice?). Each starts once the
+  call is quiet, and an answer is the one to what it heard last: one begun
+  at a pause mid-question and cut short by the rest of it is counted, not
+  timed.
   Tools that would change the player's settings or notebook are recorded
   and not run: a bench never moves MapleSyrup's settings.
 
@@ -65,7 +80,9 @@ param(
     [string]$Lang = "he-IL",
     [switch]$UseRunning,
     [int]$Port = 8443,
-    [string]$TtsVoice = "ash"
+    [string]$TtsVoice = "ash",
+    [string]$Variant = "",
+    [string]$TtsStyle = "A native speaker of the text's language, speaking it naturally and clearly, casually, like a gamer on voice chat with a friend."
 )
 
 $ErrorActionPreference = "Stop"
@@ -78,6 +95,10 @@ $AppDir = Split-Path -Parent $Here
 $Exe = Join-Path $AppDir "MapleSyrup.exe"
 $AudioDir = Join-Path $Here "audio"
 $ResultsDir = Join-Path $Here "results"
+$VariantsDir = Join-Path $Here "variants"
+# Speech nobody could make out, played as a question when it is there: the
+# call should say it didn't catch it.
+$UnclearFile = Join-Path $AudioDir "unclear.pcm"
 New-Item -ItemType Directory -Force -Path $AudioDir, $ResultsDir | Out-Null
 
 # Milliseconds of audio per chunk, as the phone sends its microphone; room
@@ -91,6 +112,9 @@ $SpeechFloor = 328
 $SpeechTailMs = 30
 $TurnMaxMs = 30000
 $QuietBetweenMs = 1500
+# Before each question and scenario: every answer begun finished, and none
+# begun for this long (what came before is over).
+$SettleMs = 800
 $SampleRate = 24000
 # The room with nobody talking: how long, how loud (RMS, of full scale:
 # 0.01 is -40 dB), and how long to listen after it for an answer.
@@ -111,7 +135,9 @@ $BuiltIn = @(
     "כמה זמן ייקח לי להגיע לרמה שלושים בקצב הזה?",
     "Hey, how's it going?",
     "What should I do next?",
-    "אני חושב לעבור למפה אחרת כי פה יש יותר מדי שחקנים, יש לך רעיון לאן כדאי לי ללכת עם הרמה שלי?"
+    "אני חושב לעבור למפה אחרת כי פה יש יותר מדי שחקנים, יש לך רעיון לאן כדאי לי ללכת עם הרמה שלי?",
+    "ספר לי בדיחה קצרה",
+    "מה דעתך, כדאי לי לקחת הפסקה לאכול משהו?"
 )
 # A question with a long answer, and what is said over it.
 $LongQuestion = "תספר לי בפירוט את כל הסיפור של מייפל איילנד מההתחלה"
@@ -123,7 +149,8 @@ $PauseSecond = "לעבור למפה אחרת, מה אתה אומר?"
 $PauseMs = 900
 
 # ---- a WebSocket with timestamps, and the localhost certificate ---------
-Add-Type -TypeDefinition @"
+# (A single-quoted here-string: PowerShell expands nothing in the C#.)
+Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -155,7 +182,7 @@ public static class BenchTls {
 }
 
 public static class BenchAudio {
-    // A room's noise, `ms` long at `rms` of full scale: white noise smoothed
+    // A room's noise, ms long at rms of full scale: white noise smoothed
     // to a hum, 16-bit PCM.
     public static byte[] Noise(int rate, int ms, double rms, int seed) {
         var random = new Random(seed);
@@ -177,8 +204,8 @@ public static class BenchAudio {
         return pcm;
     }
 
-    // Where the speech in 16-bit PCM ends: `tailBytes` after the last sample
-    // louder than `floor`.
+    // Where the speech in 16-bit PCM ends: tailBytes after the last sample
+    // louder than floor.
     public static int SpeechEnd(byte[] pcm, int floor, int tailBytes) {
         for (int i = pcm.Length - 2; i >= 0; i -= 2) {
             int sample = (short)(pcm[i] | (pcm[i + 1] << 8));
@@ -194,9 +221,14 @@ public class BenchSocket {
     readonly ClientWebSocket socket = new ClientWebSocket();
     readonly object sending = new object();
     public readonly ConcurrentQueue<BenchEvent> Events = new ConcurrentQueue<BenchEvent>();
+    public volatile int Created;
     public volatile int Done;
     public volatile int Sounds;
     public volatile string Error;
+    // When the call last heard the player stop, and last began an answer.
+    double lastStopped = -1, lastCreated = -1;
+    public double LastStopped { get { return Volatile.Read(ref lastStopped); } }
+    public double LastCreated { get { return Volatile.Read(ref lastCreated); } }
 
     public void Connect(string url, string bearer) {
         socket.Options.SetRequestHeader("Authorization", "Bearer " + bearer);
@@ -215,7 +247,10 @@ public class BenchSocket {
                 if (!got.EndOfMessage) continue;
                 var text = Encoding.UTF8.GetString(message.ToArray());
                 message.SetLength(0);
-                Events.Enqueue(new BenchEvent { At = BenchClock.Ms(), Json = text });
+                double at = BenchClock.Ms();
+                Events.Enqueue(new BenchEvent { At = at, Json = text });
+                if (text.Contains("\"type\":\"input_audio_buffer.speech_stopped\"")) Volatile.Write(ref lastStopped, at);
+                if (text.Contains("\"type\":\"response.created\"")) { Volatile.Write(ref lastCreated, at); Created++; }
                 if (text.Contains("\"type\":\"response.done\"")) Done++;
                 if (text.Contains("\"type\":\"response.output_audio.delta\"") || text.Contains("\"type\":\"response.audio.delta\"")) Sounds++;
             }
@@ -233,7 +268,7 @@ public class BenchSocket {
         Send("{\"type\":\"input_audio_buffer.append\",\"audio\":\"" + Convert.ToBase64String(pcm, offset, length) + "\"}");
     }
 
-    // PCM16 mono at `rate`, in real time, `chunkMs` a chunk. Returns when
+    // PCM16 mono at rate, in real time, chunkMs a chunk. Returns when
     // the last chunk went (the end of the speech).
     public double Stream(byte[] pcm, int rate, int chunkMs) {
         int size = rate * 2 * chunkMs / 1000;
@@ -247,8 +282,8 @@ public class BenchSocket {
         return BenchClock.Ms();
     }
 
-    // Room silence in real time until `doneBefore` responses more have
-    // finished, or `maxMs` passed.
+    // Room silence in real time until doneBefore responses more have
+    // finished, or maxMs passed.
     public void Silence(int rate, int chunkMs, int doneBefore, int moreDone, int maxMs) {
         var silence = new byte[rate * 2 * chunkMs / 1000];
         double start = BenchClock.Ms();
@@ -261,8 +296,48 @@ public class BenchSocket {
         }
     }
 
-    // Room silence in real time for `ms`, or until a sound more than
-    // `soundsBefore` came (`untilSound`).
+    // Whether the call answered what it heard after since: it heard the
+    // player stop after then, began an answer after that, and every answer
+    // begun has finished (one begun at a pause mid-question and cut short
+    // by the rest of it is not the answer).
+    public bool Answered(double since) {
+        double stopped = LastStopped;
+        return stopped >= since && LastCreated >= stopped && Created == Done;
+    }
+
+    // Room silence in real time until the call answered what it heard after
+    // since, or maxMs passed.
+    public void Listen(int rate, int chunkMs, double since, int maxMs) {
+        var silence = new byte[rate * 2 * chunkMs / 1000];
+        double start = BenchClock.Ms();
+        int n = 0;
+        while (!Answered(since) && BenchClock.Ms() - start < maxMs && Error == null) {
+            double due = start + n * chunkMs;
+            while (BenchClock.Ms() < due) Thread.Sleep(1);
+            Chunk(silence, 0, silence.Length);
+            n++;
+        }
+    }
+
+    // Room silence in real time until every answer begun has finished and
+    // none began for quietMs, or maxMs passed: what came before is over.
+    public void Settle(int rate, int chunkMs, int quietMs, int maxMs) {
+        var silence = new byte[rate * 2 * chunkMs / 1000];
+        double start = BenchClock.Ms();
+        double still = start;
+        int n = 0;
+        while (BenchClock.Ms() - start < maxMs && Error == null) {
+            if (Created != Done) still = BenchClock.Ms();
+            if (BenchClock.Ms() - still >= quietMs) break;
+            double due = start + n * chunkMs;
+            while (BenchClock.Ms() < due) Thread.Sleep(1);
+            Chunk(silence, 0, silence.Length);
+            n++;
+        }
+    }
+
+    // Room silence in real time for ms, or until a sound more than
+    // soundsBefore came (untilSound).
     public void Quiet(int rate, int chunkMs, int ms, bool untilSound, int soundsBefore) {
         var silence = new byte[rate * 2 * chunkMs / 1000];
         double start = BenchClock.Ms();
@@ -279,7 +354,7 @@ public class BenchSocket {
         try { socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).Wait(2000); } catch { }
     }
 }
-"@
+'@
 
 [BenchTls]::TrustLocalLink()
 
@@ -358,20 +433,27 @@ Write-Host "Measuring $Measured"
     $OpenAiKey = if ($env:OPENAI_API_KEY -like "sk-*") { $env:OPENAI_API_KEY.Trim() } else { Read-Key (Join-Path $Settings "openai-key.txt") }
     $Sha = [Security.Cryptography.SHA1]::Create()
 
+    # Speech as a question goes: room silence first, and after its last
+    # sound only a little (the voice pads its end with silence, which is not
+    # the player still talking).
+    function Format-Speech([byte[]]$Speech) {
+        $end = [BenchAudio]::SpeechEnd($Speech, $SpeechFloor, [int]($SampleRate * 2 * $SpeechTailMs / 1000))
+        $lead = [int]($SampleRate * 2 * $LeadSilenceMs / 1000)
+        $all = New-Object byte[] ($lead + $end)
+        [Array]::Copy($Speech, 0, $all, $lead, $end)
+        return ,$all
+    }
+
     function Get-Speech([string]$Text) {
-        $hash = -join ($Sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$TtsVoice|$Text")) | ForEach-Object { $_.ToString("x2") })
+        $hash = -join ($Sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$TtsVoice|$TtsStyle|$Text")) | ForEach-Object { $_.ToString("x2") })
         $file = Join-Path $AudioDir "$hash.pcm"
         if (-not (Test-Path $file)) {
-            $body = @{ model = "gpt-4o-mini-tts"; voice = $TtsVoice; input = $Text; response_format = "pcm" } | ConvertTo-Json -Compress
+            $body = @{ model = "gpt-4o-mini-tts"; voice = $TtsVoice; input = $Text; instructions = $TtsStyle; response_format = "pcm" } | ConvertTo-Json -Compress
             Invoke-WebRequest -Method Post -Uri "https://api.openai.com/v1/audio/speech" -Headers @{ Authorization = "Bearer $OpenAiKey" } `
                 -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType "application/json; charset=utf-8" -OutFile $file -UseBasicParsing | Out-Null
         }
-        $speech = [IO.File]::ReadAllBytes($file)
-        $end = [BenchAudio]::SpeechEnd($speech, $SpeechFloor, [int]($SampleRate * 2 * $SpeechTailMs / 1000))
-        $lead = [int]($SampleRate * 2 * $LeadSilenceMs / 1000)
-        $all = New-Object byte[] ($lead + $end)
-        [Array]::Copy($speech, 0, $all, $lead, $end)
-        return ,$all
+        $pcm = Format-Speech ([IO.File]::ReadAllBytes($file))
+        return ,$pcm
     }
 
     # ---- the call, as the phone gets it ------------------------------------
@@ -398,6 +480,27 @@ Write-Host "Measuring $Measured"
     $Update = @{ type = "realtime"; audio = @{ input = @{ format = @{ type = "audio/pcm"; rate = $SampleRate } }; output = @{ format = @{ type = "audio/pcm"; rate = $SampleRate } } } }
     if ($Eagerness) { $Update.audio.input.turn_detection = @{ type = "semantic_vad"; eagerness = $Eagerness; create_response = $true; interrupt_response = $true } }
     if ($Effort) { $Update.reasoning = @{ effort = $Effort } }
+    # A variant of the call's instructions: MapleSyrup's own, as it gives
+    # them to the phone, changed as the variant says.
+    $Instructions = $null
+    if ($Variant) {
+        $variantFile = @($Variant, (Join-Path $VariantsDir $Variant)) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf -ErrorAction SilentlyContinue } | Select-Object -First 1
+        if (-not $variantFile) { throw "variant not found: $Variant" }
+        $variantSpec = Get-Content -Raw -Encoding UTF8 -LiteralPath $variantFile | ConvertFrom-Json
+        $Instructions = (Invoke-Link "GET" "/api/instructions?lang=$Lang" $null).instructions
+        foreach ($change in @($variantSpec.replace)) {
+            if (-not $change) { continue }
+            $at = $Instructions.IndexOf($change.find, [StringComparison]::Ordinal)
+            if ($at -lt 0 -or $Instructions.IndexOf($change.find, $at + 1, [StringComparison]::Ordinal) -ge 0) {
+                throw "variant ${Variant}: not once in the call's instructions: $($change.find)"
+            }
+            $Instructions = $Instructions.Substring(0, $at) + $change.with + $Instructions.Substring($at + $change.find.Length)
+        }
+        if ($variantSpec.prepend) { $Instructions = $variantSpec.prepend + "`n`n" + $Instructions }
+        if ($variantSpec.append) { $Instructions = $Instructions + "`n`n" + $variantSpec.append }
+        $Update.instructions = $Instructions
+        Write-Host ("Variant {0}: {1} characters of instructions" -f $Variant, $Instructions.Length)
+    }
     $Socket.Send((@{ type = "session.update"; session = $Update } | ConvertTo-Json -Depth 10 -Compress))
     Start-Sleep -Milliseconds 500
     $Opening += Read-Events
@@ -415,13 +518,33 @@ Write-Host "Measuring $Measured"
         return ([regex]::Matches($Text, $Letters).Count / $all) -ge 0.6
     }
 
+    $SoundTypes = @("response.output_audio.delta", "response.audio.delta")
+    $SaidTypes = @("response.output_audio_transcript.done", "response.audio_transcript.done")
+    # The answer to what the call heard last: the last stop it heard, the
+    # first answer begun after it, and that answer's first sound and words
+    # (an answer begun at a pause mid-question and cut short by the rest of
+    # it is counted, not timed).
+    function Get-Answer($Events) {
+        $stop = $Events | Where-Object { $_.Type -eq "input_audio_buffer.speech_stopped" } | Select-Object -Last 1
+        $created = if ($stop) { $Events | Where-Object { $_.Type -eq "response.created" -and $_.At -ge $stop.At } | Select-Object -First 1 } else { $null }
+        $id = if ($created) { $created.Event.response.id } else { $null }
+        $sound = if ($id) { $Events | Where-Object { $SoundTypes -contains $_.Type -and $_.Event.response_id -eq $id } | Select-Object -First 1 } else { $null }
+        $words = if ($id) { @($Events | Where-Object { $SaidTypes -contains $_.Type -and $_.Event.response_id -eq $id } | ForEach-Object { $_.Event.transcript }) } else { @() }
+        $early = if ($stop) { @($Events | Where-Object { $_.Type -eq "response.created" -and $_.At -lt $stop.At }).Count } else { 0 }
+        return [pscustomobject]@{ Stop = $stop; Created = $created; Sound = $sound; Said = ($words -join " "); Early = $early }
+    }
+
     $Turns = New-Object System.Collections.ArrayList
     $AllEvents = New-Object System.Collections.ArrayList
+    $Specs = @($Lines | ForEach-Object { [pscustomobject]@{ Text = $_; Unclear = $false } })
+    if (Test-Path $UnclearFile) { $Specs += [pscustomobject]@{ Text = "(speech nobody could make out)"; Unclear = $true } }
     $Index = 0
-    foreach ($Text in $Lines) {
+    foreach ($Spec in $Specs) {
         $Index++
-        Write-Host ("[{0}/{1}] {2}" -f $Index, $Lines.Count, $Text)
-        $Pcm = Get-Speech $Text
+        $Text = $Spec.Text
+        Write-Host ("[{0}/{1}] {2}" -f $Index, $Specs.Count, $Text)
+        $Pcm = if ($Spec.Unclear) { Format-Speech ([IO.File]::ReadAllBytes($UnclearFile)) } else { Get-Speech $Text }
+        $Socket.Settle($SampleRate, $ChunkMs, $SettleMs, $TurnMaxMs)
         [void](Read-Events)
         # What the phone sends as the player starts talking: the game as read.
         try {
@@ -429,29 +552,26 @@ Write-Host "Measuring $Measured"
             $Reading = "[The game right now, read by your vision engine — not said by the player]`n" + $Eyes.snapshot
             $Socket.Send((@{ type = "conversation.item.create"; item = @{ type = "message"; role = "user"; content = @(@{ type = "input_text"; text = $Reading }) } } | ConvertTo-Json -Depth 10 -Compress))
         } catch { }
-        $DoneBefore = $Socket.Done
         $Began = [BenchClock]::Ms()
         $SpeechEnd = $Socket.Stream($Pcm, $SampleRate, $ChunkMs)
-        $Socket.Silence($SampleRate, $ChunkMs, $DoneBefore, 1, $TurnMaxMs)
+        $Socket.Listen($SampleRate, $ChunkMs, $SpeechEnd, $TurnMaxMs)
         $Events = Read-Events
-        $Turn = [ordered]@{ question = $Text; speech_ms = [math]::Round($SpeechEnd - $Began) }
+        $Turn = [ordered]@{ question = $Text; unclear = $Spec.Unclear; speech_ms = [math]::Round($SpeechEnd - $Began) }
         $first = { param($events, $types) ($events | Where-Object { $types -contains $_.Type } | Select-Object -First 1) }
-        $vad = & $first $Events @("input_audio_buffer.speech_stopped")
-        $created = & $first $Events @("response.created")
-        $sound = & $first $Events @("response.output_audio.delta", "response.audio.delta")
-        $Turn.vad_ms = if ($vad) { [math]::Round($vad.At - $SpeechEnd) } else { $null }
-        $Turn.response_ms = if ($created) { [math]::Round($created.At - $SpeechEnd) } else { $null }
-        $Turn.first_sound_ms = if ($sound) { [math]::Round($sound.At - $SpeechEnd) } else { $null }
-        $heard = $Events | Where-Object { $_.Type -eq "conversation.item.input_audio_transcription.completed" } | Select-Object -First 1
-        $Turn.heard = if ($heard) { $heard.Event.transcript } else { "" }
-        $said = $Events | Where-Object { $_.Type -in @("response.output_audio_transcript.done", "response.audio_transcript.done") } | ForEach-Object { $_.Event.transcript }
-        $Turn.said = ($said -join " ")
+        $answer = Get-Answer $Events
+        $Turn.vad_ms = if ($answer.Stop) { [math]::Round($answer.Stop.At - $SpeechEnd) } else { $null }
+        $Turn.response_ms = if ($answer.Created) { [math]::Round($answer.Created.At - $SpeechEnd) } else { $null }
+        $Turn.first_sound_ms = if ($answer.Sound) { [math]::Round($answer.Sound.At - $SpeechEnd) } else { $null }
+        $Turn.cut_in = $answer.Early
+        $Turn.heard = (@($Events | Where-Object { $_.Type -eq "conversation.item.input_audio_transcription.completed" } | ForEach-Object { $_.Event.transcript }) -join " | ")
+        $Turn.said = $answer.Said
         $Turn.in_language = Test-InLanguage $Turn.said
         foreach ($e in $Events) { [void]$AllEvents.Add([pscustomobject]@{ turn = $Index; at = [math]::Round($e.At - $SpeechEnd); type = $e.Type }) }
 
         # Tools the call asked for: run by MapleSyrup, each answer sent back
         # and the next first sound timed from there.
-        $done = $Events | Where-Object { $_.Type -eq "response.done" } | Select-Object -Last 1
+        $answerId = if ($answer.Created) { $answer.Created.Event.response.id } else { $null }
+        $done = $Events | Where-Object { $_.Type -eq "response.done" -and $_.Event.response.id -eq $answerId } | Select-Object -Last 1
         $calls = @()
         if ($done) { $calls = @($done.Event.response.output | Where-Object { $_.type -eq "function_call" }) }
         $Turn.tools = @()
@@ -475,8 +595,8 @@ Write-Host "Measuring $Measured"
             $sentAt = [BenchClock]::Ms()
             $Socket.Silence($SampleRate, $ChunkMs, $doneBefore, 1, $TurnMaxMs)
             $after = Read-Events
-            $next = & $first $after @("response.output_audio.delta", "response.audio.delta")
-            $words = $after | Where-Object { $_.Type -in @("response.output_audio_transcript.done", "response.audio_transcript.done") } | ForEach-Object { $_.Event.transcript }
+            $next = & $first $after $SoundTypes
+            $words = $after | Where-Object { $SaidTypes -contains $_.Type } | ForEach-Object { $_.Event.transcript }
             $Turn.tools += [ordered]@{
                 name = $c.name; arguments = $c.arguments; output = [string]$output
                 ran_ms = [math]::Round($ranTo - $ranFrom)
@@ -487,15 +607,16 @@ Write-Host "Measuring $Measured"
             foreach ($e in $after) { [void]$AllEvents.Add([pscustomobject]@{ turn = $Index; at = [math]::Round($e.At - $SpeechEnd); type = $e.Type }) }
         }
         [void]$Turns.Add($Turn)
-        Write-Host ("    stop heard after {0} ms; first sound {1} ms after the question ended" -f $Turn.vad_ms, $Turn.first_sound_ms)
+        Write-Host ("    stop heard after {0} ms; first sound {1} ms after the question ended{2}" -f $Turn.vad_ms, $Turn.first_sound_ms, $(if ($Turn.cut_in) { " (began $($Turn.cut_in) answer(s) mid-question)" } else { "" }))
         Start-Sleep -Milliseconds $QuietBetweenMs
     }
 
-    $saidOf = { param($events) (($events | Where-Object { $_.Type -in @("response.output_audio_transcript.done", "response.audio_transcript.done") } | ForEach-Object { $_.Event.transcript }) -join " ") }
+    $saidOf = { param($events) (($events | Where-Object { $SaidTypes -contains $_.Type } | ForEach-Object { $_.Event.transcript }) -join " ") }
     $heardOf = { param($events) (($events | Where-Object { $_.Type -eq "conversation.item.input_audio_transcription.completed" } | ForEach-Object { $_.Event.transcript }) -join " | ") }
 
     # ---- a room with nobody talking: does it answer noise? ----------------
     Write-Host "[noise] a room with nobody talking"
+    $Socket.Settle($SampleRate, $ChunkMs, $SettleMs, $TurnMaxMs)
     [void](Read-Events)
     $doneBefore = $Socket.Done
     $noiseFrom = [BenchClock]::Ms()
@@ -519,7 +640,7 @@ Write-Host "Measuring $Measured"
         noise_ms = $NoiseMs; noise_db = [math]::Round(20 * [math]::Log10($NoiseRms))
         heard_speech = @($events | Where-Object { $_.Type -eq "input_audio_buffer.speech_started" }).Count
         answered = $answered
-        spoke = @($events | Where-Object { $_.Type -in @("response.output_audio.delta", "response.audio.delta") }).Count -gt 0
+        spoke = @($events | Where-Object { $SoundTypes -contains $_.Type }).Count -gt 0
         heard = (& $heardOf $events); said = (& $saidOf $events)
     }
     foreach ($e in $events) { [void]$AllEvents.Add([pscustomobject]@{ turn = "noise"; at = [math]::Round($e.At - $noiseFrom); type = $e.Type }) }
@@ -530,30 +651,24 @@ Write-Host "Measuring $Measured"
     Write-Host "[pause] a pause in the middle of a sentence"
     $firstHalf = Get-Speech $PauseFirst
     $secondHalf = Get-Speech $PauseSecond
+    $Socket.Settle($SampleRate, $ChunkMs, $SettleMs, $TurnMaxMs)
     [void](Read-Events)
-    $doneBefore = $Socket.Done
     $firstEnd = $Socket.Stream($firstHalf, $SampleRate, $ChunkMs)
     $Socket.Quiet($SampleRate, $ChunkMs, $PauseMs, $false, 0)
     $secondVoice = [BenchClock]::Ms() + $LeadSilenceMs
     $secondEnd = $Socket.Stream($secondHalf, $SampleRate, $ChunkMs)
-    # Until every answer begun has finished (one cut short, and the one to
-    # the whole sentence).
-    $events = @()
-    $deadline = [BenchClock]::Ms() + $TurnMaxMs
-    do {
-        $Socket.Quiet($SampleRate, $ChunkMs, 300, $false, 0)
-        $more = Read-Events
-        $events = @($events) + @($more)
-        $begun = @($events | Where-Object { $_.Type -eq "response.created" }).Count
-    } while ([BenchClock]::Ms() -lt $deadline -and -not ($begun -gt 0 -and $Socket.Done -ge $doneBefore + $begun))
+    # Until the answer to the whole sentence (any begun in the pause cut
+    # short by the rest of it).
+    $Socket.Listen($SampleRate, $ChunkMs, $secondEnd, $TurnMaxMs)
+    $events = Read-Events
     $jumped = $events | Where-Object { $_.Type -eq "response.created" -and $_.At -lt $secondVoice } | Select-Object -First 1
-    $pauseSound = $events | Where-Object { $_.Type -in @("response.output_audio.delta", "response.audio.delta") -and $_.At -ge $secondEnd } | Select-Object -First 1
+    $pauseAnswer = Get-Answer $events
     $PauseTurn = [ordered]@{
         pause_ms = $PauseMs + $LeadSilenceMs
         jumped_in = [bool]$jumped
         jumped_after_ms = if ($jumped) { [math]::Round($jumped.At - $firstEnd) } else { $null }
-        first_sound_ms = if ($pauseSound) { [math]::Round($pauseSound.At - $secondEnd) } else { $null }
-        heard = (& $heardOf $events); said = (& $saidOf @($events | Where-Object { $_.At -ge $secondEnd }))
+        first_sound_ms = if ($pauseAnswer.Sound) { [math]::Round($pauseAnswer.Sound.At - $secondEnd) } else { $null }
+        heard = (& $heardOf $events); said = $pauseAnswer.Said
     }
     foreach ($e in $events) { [void]$AllEvents.Add([pscustomobject]@{ turn = "pause"; at = [math]::Round($e.At - $firstEnd); type = $e.Type }) }
     Write-Host ("    jumped in during the pause: {0}; answered {1} ms after the sentence ended" -f $PauseTurn.jumped_in, $PauseTurn.first_sound_ms)
@@ -563,28 +678,29 @@ Write-Host "Measuring $Measured"
     Write-Host "[over] talking over a long answer"
     $long = Get-Speech $LongQuestion
     $over = Get-Speech $OverQuestion
+    $Socket.Settle($SampleRate, $ChunkMs, $SettleMs, $TurnMaxMs)
     [void](Read-Events)
-    $doneBefore = $Socket.Done
     $longEnd = $Socket.Stream($long, $SampleRate, $ChunkMs)
     $Socket.Quiet($SampleRate, $ChunkMs, $TurnMaxMs, $true, $Socket.Sounds)
     $Socket.Quiet($SampleRate, $ChunkMs, $OverAfterMs, $false, 0)
     $overFrom = [BenchClock]::Ms()
     $overVoice = $overFrom + $LeadSilenceMs
     $overEnd = $Socket.Stream($over, $SampleRate, $ChunkMs)
-    $Socket.Silence($SampleRate, $ChunkMs, $doneBefore, 2, $TurnMaxMs)
+    $Socket.Listen($SampleRate, $ChunkMs, $overEnd, $TurnMaxMs)
     $events = Read-Events
-    $firstDone = $events | Where-Object { $_.Type -eq "response.done" } | Select-Object -First 1
+    # The long answer: the one speaking when the player began to talk over it.
+    $longSound = $events | Where-Object { $SoundTypes -contains $_.Type } | Select-Object -First 1
+    $longId = if ($longSound) { $longSound.Event.response_id } else { $null }
+    $firstDone = $events | Where-Object { $_.Type -eq "response.done" -and $_.Event.response.id -eq $longId } | Select-Object -First 1
     $noticed = $events | Where-Object { $_.Type -eq "input_audio_buffer.speech_started" -and $_.At -ge $overFrom } | Select-Object -First 1
-    $nextSound = $events | Where-Object { $_.Type -in @("response.output_audio.delta", "response.audio.delta") -and $_.At -ge $overEnd } | Select-Object -First 1
-    $longSound = $events | Where-Object { $_.Type -in @("response.output_audio.delta", "response.audio.delta") } | Select-Object -First 1
-    $after = @($events | Where-Object { $_.At -ge $overEnd })
+    $overAnswer = Get-Answer @($events | Where-Object { $_.At -ge $overFrom })
     $OverTurn = [ordered]@{
         long_first_sound_ms = if ($longSound) { [math]::Round($longSound.At - $longEnd) } else { $null }
         long_answer = if ($firstDone) { $firstDone.Event.response.status } else { $null }
         long_done_before_over = if ($firstDone) { $firstDone.At -lt $overVoice } else { $null }
         noticed_ms = if ($noticed) { [math]::Round($noticed.At - $overVoice) } else { $null }
-        next_first_sound_ms = if ($nextSound) { [math]::Round($nextSound.At - $overEnd) } else { $null }
-        heard = (& $heardOf $events); said_after = (& $saidOf $after)
+        next_first_sound_ms = if ($overAnswer.Sound) { [math]::Round($overAnswer.Sound.At - $overEnd) } else { $null }
+        heard = (& $heardOf $events); said_after = $overAnswer.Said
     }
     $OverTurn.in_language = Test-InLanguage $OverTurn.said_after
     foreach ($e in $events) { [void]$AllEvents.Add([pscustomobject]@{ turn = "over"; at = [math]::Round($e.At - $overVoice); type = $e.Type }) }
@@ -596,6 +712,7 @@ Write-Host "Measuring $Measured"
     $Name = if ($Label) { "$Stamp $Label" } else { $Stamp }
     $Report = [ordered]@{
         when = (Get-Date -Format o); label = $Label; measured = $Measured; model = $Call.model
+        variant = $Variant; instructions = $Instructions
         session = [ordered]@{ reasoning = $Session.reasoning; turn_detection = $Session.audio.input.turn_detection; noise_reduction = $Session.audio.input.noise_reduction; transcription = $Session.audio.input.transcription; voice = $Session.audio.output.voice; speed = $Session.audio.output.speed }
         turns = $Turns; noise = $NoiseTurn; pause = $PauseTurn; talk_over = $OverTurn; events = $AllEvents; error = $Socket.Error
     }
@@ -607,8 +724,9 @@ Write-Host "Measuring $Measured"
         "MapleSyrup live call bench — $Name",
         "measured: $Measured",
         "model $($Call.model); reasoning $($Session.reasoning.effort); turn detection $($Session.audio.input.turn_detection.type) $($Session.audio.input.turn_detection.eagerness); noise reduction $($Session.audio.input.noise_reduction.type)",
+        $(if ($Variant) { "instructions: MapleSyrup's, as variant $Variant has them ($($Instructions.Length) characters)" } else { "instructions: MapleSyrup's own" }),
         ("first sound after the question ended: median {0} ms, min {1}, max {2} (n={3})" -f (& $median $sounds), ($sounds | Select-Object -First 1), ($sounds | Select-Object -Last 1), $sounds.Count),
-        ("of which hearing the question stop: median {0} ms" -f (& $median $vads)),
+        ("of which hearing the question stop: median {0} ms; answers begun mid-question and cut short: {1}" -f (& $median $vads), (@($Turns | ForEach-Object { $_.cut_in }) | Measure-Object -Sum).Sum),
         ("answers in the phone's language ({0}): {1} of {2}" -f $Lang, @($Turns | Where-Object { $_.in_language -eq $true }).Count, @($Turns | Where-Object { $null -ne $_.in_language }).Count),
         ("a room with nobody talking ({0} dB, {1} s): heard speech {2} times, answered {3} times, spoke: {4}{5}" -f $NoiseTurn.noise_db, ($NoiseTurn.noise_ms / 1000), $NoiseTurn.heard_speech, $NoiseTurn.answered, $NoiseTurn.spoke, $(if ($NoiseTurn.said) { ": " + $NoiseTurn.said } else { "" })),
         ("a pause of {0} ms mid-sentence: jumped in: {1}{2}; the whole sentence answered {3} ms after it ended: {4}" -f $PauseTurn.pause_ms, $PauseTurn.jumped_in, $(if ($PauseTurn.jumped_in) { " (" + $PauseTurn.jumped_after_ms + " ms into the pause)" } else { "" }), $PauseTurn.first_sound_ms, $PauseTurn.said),
@@ -616,7 +734,7 @@ Write-Host "Measuring $Measured"
         ""
     )
     foreach ($t in $Turns) {
-        $Summary += ("{0,6} ms  {1}{2}" -f $t.first_sound_ms, $t.question, $(if ($t.kept_quiet) { "  (kept quiet: took it as not said to it)" } else { "" }))
+        $Summary += ("{0,6} ms  {1}{2}{3}" -f $t.first_sound_ms, $t.question, $(if ($t.kept_quiet) { "  (kept quiet: took it as not said to it)" } else { "" }), $(if ($t.cut_in) { "  (began $($t.cut_in) answer(s) mid-question)" } else { "" }))
         $Summary += ("          heard: {0}" -f $t.heard)
         $Summary += ("          said:  {0}" -f $t.said)
         foreach ($tool in $t.tools) {
