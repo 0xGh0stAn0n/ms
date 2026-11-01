@@ -944,6 +944,13 @@ const TRUST_BOTTOM: f32 = 0.5;
 /// in seconds: the line, its playing, and the phone's recognition finishing.
 const ECHO_WINDOW: f64 = 30.0;
 
+/// How long after a line has ended (its estimated end: see
+/// [`OWN_SECS_PER_WORD`]) the phone has handed it back, at most, in the
+/// owner's evening: 1–7 s. A command heard later than this after every
+/// line it shares words with is the player's, whole (see
+/// [`Companion::own_words`]).
+const ECHO_TAIL: f64 = 8.0;
+
 /// Its own voice is never the player ([`Companion::own_words`]): a heard
 /// sentence whose words are mostly — this share or more — words it said in
 /// the last [`OWN_WINDOW`] s is its own voice, dropped whole, unless what is
@@ -966,6 +973,14 @@ const OWN_SECS_PER_WORD: f64 = 0.4;
 /// phone writes down is still the player's: the words of that moment, and
 /// the sentence they end.
 const VOICE_OVER_FOR: f64 = 6.0;
+
+/// Whether a line noted at `at` may still come back through the phone at
+/// `now`: from just before it was noted until [`ECHO_TAIL`] after its
+/// estimated end.
+fn may_echo(now: f64, at: f64, said: &str) -> bool {
+    let end = at + OWN_LEAD_SECS + OWN_SECS_PER_WORD * said.split(' ').count() as f64;
+    now >= at - 1.0 && now <= end + ECHO_TAIL
+}
 
 /// Edits (insertions, deletions, substitutions) from `a` to `b`, by letter.
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -2853,6 +2868,20 @@ impl Companion {
         }
     }
 
+    /// Whether `heard` is a command and no line it shares words with may
+    /// still be coming back through the phone ([`may_echo`]).
+    fn asked_after_its_voice(&self, now: f64, heard: &str) -> bool {
+        if !matches!(commands::interpret(heard, true), Heard::Command(_)) {
+            return false;
+        }
+        let words = commands::normalize(heard);
+        let words: Vec<&str> = words.split(' ').filter(|w| !w.is_empty()).collect();
+        !self
+            .spoken
+            .iter()
+            .any(|(t, said)| may_echo(now, *t, said) && said.split(' ').any(|w| words.contains(&w)))
+    }
+
     /// Whether `heard` is only MapleSyrup's own voice coming back through the
     /// phone's microphone, with nothing of the player's in it.
     pub fn is_echo(&self, now: f64, heard: &str) -> bool {
@@ -2891,8 +2920,8 @@ impl Companion {
         let recent: Vec<(f64, Vec<&str>)> = self
             .spoken
             .iter()
+            .filter(|(t, _)| (-1.0..=ECHO_WINDOW).contains(&(now - t)))
             .map(|(t, said)| (now - t, said.split(' ').collect::<Vec<_>>()))
-            .filter(|(age, _)| (-1.0..=ECHO_WINDOW).contains(age))
             .collect();
         if recent.is_empty() {
             return Some(heard.to_string());
@@ -3202,6 +3231,14 @@ impl Companion {
     /// the PC's voice, a clip on the phone and a call's transcript: each is
     /// a line noted as said.
     pub fn own_words(&self, now: f64, heard: &str, need: usize) -> Option<String> {
+        // Asking what it just offered ("how long until I level" after the
+        // help) is no echo once its voice is gone: a command, heard after
+        // every line it shares words with has been over for ECHO_TAIL, is
+        // his whole (bug sheet 25.10 #5: "it doesn't respond, even when I
+        // repeat myself").
+        if self.asked_after_its_voice(now, heard) {
+            return Some(heard.trim().to_string());
+        }
         let rest = self.strip_echo(now, heard)?;
         let rest = self.not_mostly_own(now, heard, rest)?;
         if need == 0 {
@@ -4365,7 +4402,12 @@ impl Companion {
             speak: false,
             about: None,
         })];
-        let Some(sentence) = self.strip_echo(now, sentence) else {
+        let stripped = if self.asked_after_its_voice(now, sentence) {
+            Some(sentence.to_string())
+        } else {
+            self.strip_echo(now, sentence)
+        };
+        let Some(sentence) = stripped else {
             return out;
         };
         let sentence = sentence.as_str();
@@ -9377,6 +9419,28 @@ mod tests {
                 "ok chat so today we are farming the monkey forest until sixty"
             ))
             .is_empty()
+        );
+    }
+
+    #[test]
+    fn asking_what_it_just_offered_is_answered_once_its_voice_is_gone() {
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.observe(0.0, frame(82.0, 40.0, 13.25));
+        let help = "Just talk to me. Ask how you're doing, about your HP, MP, EXP or level, or how long until you level.";
+        c.remember_spoken(1.0, help);
+        // While it says it and just after, its own words are its echo.
+        assert_eq!(c.own_words(6.0, "how long until you level", 0), None);
+        assert_eq!(c.own_words(12.0, "how long until I level", 0), None);
+        // The line (about 13 s) is long over: the player is asking.
+        assert_eq!(
+            c.own_words(22.0, "how long until I level", 0).as_deref(),
+            Some("how long until I level")
+        );
+        // …and answered, not cut to "I level".
+        assert!(
+            c.heard(22.5, "how long until I level")
+                .iter()
+                .any(|a| matches!(a, Action::Say(s) if s.kind == Kind::Reply)),
         );
     }
 
