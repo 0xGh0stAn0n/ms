@@ -105,10 +105,12 @@ until the ratio holds.
 
 ## What is not in yet, by design
 
-- **Hebrew end-of-turn detection**: none of the open or vendor models
-  support Hebrew (`research/timing_turn_taking.md`); the phone's settle
-  timer and the call's semantic VAD stay. Smart Turn is open and could be
-  fine-tuned on Hebrew gameplay speech.
+- **Hebrew end-of-turn detection**: none of the three dedicated
+  end-of-turn classifiers checked lists Hebrew (LiveKit's detector, Smart
+  Turn v3, Deepgram Flux; `research/timing_turn_taking.md`), and the
+  vendors' own semantic VADs publish no list except Gemini's, which does
+  name Hebrew; the phone's settle timer and the call's semantic VAD stay.
+  Smart Turn is open and could be fine-tuned on Hebrew gameplay speech.
 - **A phone control for the dial**: the PC side is there (`/api/initiative`,
   `initiative` in `/api/state`, the `set_initiative` tool, the setting in
   the notebook); the page's control is UX work for Yohai.
