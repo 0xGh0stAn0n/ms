@@ -960,6 +960,12 @@ impl Sight {
             let percent = read.as_ref().map(|r| r.value.percent());
             let streak = self.numbers.cross_check(field, percent, bar);
             disagree = disagree.max(streak);
+            // The number and the bar disagreeing for this long: the font's
+            // examples for the line go (a wrong one is the likelier cause),
+            // and the HUD is read again (below) to label it anew.
+            if streak == numbers::DISAGREE_FOR {
+                self.numbers.forget_field(field);
+            }
             // The game's own number says how far the fill should reach: a
             // bar whose track end was guessed from its fill is refitted to
             // it, the way a reading by the teacher refits it. Only a new
@@ -1465,10 +1471,11 @@ disagrees with them is not believed).",
             if !self.numbers.wants_sample(field, now) {
                 continue;
             }
-            todo.push((field, text.clone(), bar.band, bar.measure(frame)));
+            let fitted = !bar.readings.is_empty();
+            todo.push((field, text.clone(), bar.band, bar.measure(frame), fitted));
         }
-        for (field, text, band, measured) in todo {
-            let learned = Numbers::believable(field, &text, measured)
+        for (field, text, band, measured, fitted) in todo {
+            let learned = Numbers::believable(field, &text, measured, fitted)
                 .and_then(|_| self.numbers.learn(frame, field, &band, &text, "model", now));
             match learned {
                 Ok(line) => notes.push(line),
@@ -3113,6 +3120,111 @@ mod tests {
         let line = sight.verified(&frame, &wrong);
         assert!(line.contains("looked for again"), "{line}");
         assert_eq!(sight.wants(1280, 720), Some(Want::Calibrate));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A sight that reads the numbers in the font, taught on a HUD of HP
+    /// 400/400, MP 1291/1351 and EXP 37.51% (as in
+    /// `the_numbers_are_read_every_frame_once_the_teacher_spelled_them_out`).
+    fn font_sight(name: &str) -> (Sight, PathBuf) {
+        let dir = temp_dir(name);
+        let mut sight = Sight::load(&dir);
+        let (frame, bands) = numbers::tests::hud((400, 400), (1291, 1351), 37.51);
+        let c = Calibration {
+            level: None,
+            hp: Some(bands[0].grown(0.05, 0.4)),
+            mp: Some(bands[1].grown(0.05, 0.4)),
+            exp: Some(bands[2].grown(0.05, 0.4)),
+            minimap: None,
+            values: HudValues {
+                hp: Some((400, 400)),
+                mp: Some((1291, 1351)),
+                exp_percent: Some(37.51),
+                hp_text: Some("HP [400/400]".into()),
+                mp_text: Some("MP [1291/1351]".into()),
+                exp_text: Some("EXP [37.51%]".into()),
+                ..Default::default()
+            },
+        };
+        sight.calibrated(&frame, &c).unwrap();
+        assert!(sight.numbers.knows(Field::Hp));
+        (sight, dir)
+    }
+
+    /// The HUD of `numbers::tests::hud` with its HP line saying `said` over
+    /// a bar drawn as full as `bar` (a misread, when the two differ).
+    fn hp_line_over(said: (u64, u64), bar: (u64, u64)) -> RgbaImage {
+        let (mut f, b) = numbers::tests::hud(said, (1291, 1351), 37.51);
+        let (drawn, _) = numbers::tests::hud(bar, (1291, 1351), 37.51);
+        let (x, y, w, h) = b[0].pixels(1280, 720);
+        for yy in y..y + h {
+            for xx in x..x + w {
+                f.put_pixel(xx, yy, *drawn.get_pixel(xx, yy));
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn a_label_only_roughly_like_a_fitted_bar_does_not_teach_the_font() {
+        let dir = temp_dir("label-fitted");
+        let mut sight = Sight::load(&dir);
+        let (frame, bands) = numbers::tests::hud((400, 400), (1291, 1351), 37.51);
+        let c = Calibration {
+            level: None,
+            hp: Some(bands[0].grown(0.05, 0.4)),
+            mp: None,
+            exp: None,
+            minimap: None,
+            values: HudValues {
+                hp: Some((400, 400)),
+                ..Default::default()
+            },
+        };
+        sight.calibrated(&frame, &c).unwrap();
+        assert!(!sight.numbers.knows(Field::Hp));
+        // The bar, fitted by that read, shows 100%; a label of 370/400
+        // (92.5%: a 9 read as a 7) is within the 12 points a label of a
+        // bar not yet fitted may be off by, and is not learned from.
+        let label = |text: &str| HudValues {
+            hp_text: Some(text.into()),
+            ..Default::default()
+        };
+        let notes = sight.learn_font(
+            &hp_line_over((370, 400), (400, 400)),
+            &label("HP [370/400]"),
+        );
+        assert!(!sight.numbers.knows(Field::Hp), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("not learned")), "{notes:?}");
+        // One within a few points of it is.
+        let notes = sight.learn_font(
+            &hp_line_over((390, 400), (400, 400)),
+            &label("HP [390/400]"),
+        );
+        assert!(sight.numbers.knows(Field::Hp), "{notes:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_number_that_keeps_disagreeing_with_its_bar_loses_its_examples() {
+        let (mut sight, dir) = font_sight("font-forget");
+        // The font reads 400/400 over a bar 10% full, frame after frame:
+        // the line's examples are dropped (to be learned again), the
+        // other lines' kept.
+        let odd = hp_line_over((400, 400), (40, 400));
+        let t0 = Instant::now();
+        for i in 0..numbers::DISAGREE_FOR {
+            sight.observe(&odd, t0 + Duration::from_millis(100 * i as u64));
+        }
+        let fields: Vec<Field> = sight.numbers.samples().iter().map(|s| s.field).collect();
+        assert!(!fields.contains(&Field::Hp), "{fields:?}");
+        assert!(
+            fields.contains(&Field::Mp) && fields.contains(&Field::Exp),
+            "{fields:?}"
+        );
+        assert!(!sight.numbers.knows(Field::Hp));
+        assert!(sight.numbers.knows(Field::Mp));
+        assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
