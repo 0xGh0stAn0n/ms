@@ -216,7 +216,7 @@ mod win {
                         // Packed, three bytes a sample (USB and studio
                         // interfaces): the top three bytes of an i32.
                         let bytes = std::slice::from_raw_parts(data as *const u8, values * 3);
-                        samples.extend(bytes.chunks_exact(3).map(|b| {
+                        samples.extend(bytes.as_chunks::<3>().0.iter().map(|b| {
                             i32::from_le_bytes([0, b[0], b[1], b[2]]) as f32 / 2_147_483_648.0
                         }));
                     } else {
