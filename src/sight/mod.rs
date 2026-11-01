@@ -1110,6 +1110,17 @@ impl Sight {
         // from the last read by nature.)
         if seen.hp_number.is_none() {
             seen.hp = self.judge_fill(0, seen.hp, now);
+            // A death the teacher read, its empty bar measuring nothing: that
+            // read still holds, as a read (a fill at zero is no reading, see
+            // `companion::SLIVER`), so the companion sees the death.
+            if seen.hp.is_none()
+                && let Some(t) = self.told[0].filter(|t| {
+                    t.percent <= 0.5 && now.saturating_duration_since(t.at) <= TOLD_JUDGES
+                })
+            {
+                seen.hp = Some(0.0);
+                seen.hp_number = t.amount;
+            }
         }
         if seen.mp_number.is_none() {
             seen.mp = self.judge_fill(1, seen.mp, now);
@@ -1216,8 +1227,10 @@ impl Sight {
     /// or it cannot answer), the fill as it is.
     fn judge_fill(&mut self, i: usize, fill: Option<f32>, now: Instant) -> Option<f32> {
         let fill = fill?;
-        let Some(told) =
-            self.told[i].filter(|t| now.saturating_duration_since(t.at) <= TOLD_JUDGES)
+        // (A read of 0 is a death: the next life starts full, and its fill
+        // is no misread of the 0.)
+        let Some(told) = self.told[i]
+            .filter(|t| now.saturating_duration_since(t.at) <= TOLD_JUDGES && t.percent > 0.5)
         else {
             return Some(fill);
         };
@@ -2882,6 +2895,31 @@ mod tests {
         );
         let seen = sight.observe(&status_bar(29.0, 100.0), t0 + Duration::from_secs(6));
         assert!((seen.hp.unwrap() - 29.0).abs() < 2.0, "{seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn after_a_death_read_the_revived_fill_is_believed() {
+        let dir = temp_dir("revived");
+        let mut sight = Sight::load(&dir);
+        sight
+            .calibrated(&status_bar(60.0, 100.0), &calibration())
+            .unwrap();
+        sight.verified(
+            &status_bar(0.0, 100.0),
+            &HudValues {
+                hp: Some((0, 5000)),
+                mp: Some((2000, 2000)),
+                ..Default::default()
+            },
+        );
+        // The empty bar after the read of 0 is still 0, frame after frame.
+        for _ in 0..3 {
+            let seen = sight.observe(&status_bar(0.0, 100.0), Instant::now());
+            assert_eq!(seen.hp, Some(0.0), "{seen:?}");
+        }
+        let seen = sight.observe(&status_bar(100.0, 100.0), Instant::now());
+        assert!(seen.hp.is_some_and(|hp| hp > 90.0), "{seen:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
