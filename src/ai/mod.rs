@@ -1209,7 +1209,14 @@ specific thing that just happened or that you just saw, the way a friend blurts 
 portal.\" \"Rebuff.\" \"Oof, that hit.\"), never a run-down of the screen (\"you're on a map with four \
 characters…\"). One short line, in your attitude's voice; an instruction when there is one. Most of the time \
 there is nothing worth saying: then reply with exactly [silent]. Never narrate or list what's on screen, never \
-comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet.";
+comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet. \
+Your line is heard about five seconds after this picture: never tell them to hit, dodge or kill one particular \
+monster, nor react to something that is over in a second; say what still holds by then.";
+
+/// A coach's line ready this long after its look is about a moment gone
+/// (the bug sheet's "kill the blue snail" after it was dead): left out. A
+/// look usually takes 4-7 s.
+const COACH_STALE: Duration = Duration::from_secs(8);
 
 /// How the model is told what it learned is there.
 const LEARNED_GUIDE: &str =
@@ -1567,6 +1574,15 @@ engine:\n{snapshot}\n\n{reason}"
         Err(AiError::Cancelled) => called_off = true,
         Err(e) => error = Some(e.detail()),
         Ok(answer) if brain::is_silent(&answer.text) => {}
+        Ok(answer) if started.elapsed() > COACH_STALE => {
+            let _ = tx.send(Done::Noted {
+                line: format!(
+                    "{label}: left out, ready {:.1} s after the look: {}",
+                    started.elapsed().as_secs_f32(),
+                    answer.text
+                ),
+            });
+        }
         Ok(answer) => {
             // Nothing it said lately is said again: a coach that keeps
             // calling the same thing out is cut to what is new. What is

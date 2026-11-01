@@ -135,6 +135,16 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                 // A model that answers from the snapshot it was
                                 // given (HP 40%, or 12% for the coach) while the
                                 // game has moved on.
+                                // A look that takes 9 s.
+                                Some(_) if body["input"].to_string().contains("slow-look") => {
+                                    std::thread::sleep(Duration::from_secs(9));
+                                    Response::json(
+                                        200,
+                                        &json!({"output": [{"type": "message", "role": "assistant", "content": [
+                                            {"type": "output_text", "text": "Kill the blue snail."}
+                                        ]}]}),
+                                    )
+                                }
                                 Some(_) if body["input"].to_string().contains("stale-hp") => {
                                     let text = if body["input"].to_string().contains("coach-look") {
                                         "Drink a potion, you're at 12% HP. Nice dodge on that last hit."
@@ -853,6 +863,45 @@ fn what_is_said_of_a_bar_is_as_it_is_when_said() {
             _ => {}
         }
     }
+}
+
+#[test]
+fn a_coach_line_ready_long_after_its_look_is_left_out() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let id = worker.send(Job::Coach {
+        reason: "slow-look".into(),
+        label: "look".into(),
+        snapshot: String::new(),
+        facts: Default::default(),
+        eyes: None,
+        said: Vec::new(),
+        language: None,
+        speak: true,
+    });
+    let mut notes = Vec::new();
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)).unwrap() {
+            Done::Noted { line } => notes.push(line),
+            Done::Coached { id: of, text, .. } if of == id => {
+                assert_eq!(text, None);
+                break;
+            }
+            Done::Audio { text, .. } => panic!("said: {text}"),
+            Done::Failed { error, .. } => panic!("{error}"),
+            _ => {}
+        }
+    }
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("left out, ready") && n.contains("blue snail")),
+        "{notes:?}"
+    );
 }
 
 fn outcome(worker: &ms::ai::Worker, id: u64) -> (Option<String>, Vec<String>, Vec<String>) {
