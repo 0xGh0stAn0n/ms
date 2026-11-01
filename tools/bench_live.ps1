@@ -61,8 +61,9 @@
 
 .NOTES
   Besides the questions it plays the player talking to someone else in the
-  room (does it keep out of it?), speech nobody could make out
-  (audio\unclear.pcm, when there: does it say it didn't catch it?), a room with nobody talking
+  room (does it keep out of it?), speech nobody could make out (one of the
+  questions backwards, kept as audio\unclear.pcm: does it say it didn't
+  catch it?), a room with nobody talking
   (does the call answer noise?), a pause mid-sentence (does it jump in?) and
   talks over a long answer (how soon does it notice?). Each starts once the
   call is quiet, and an answer is the one to what it heard last: one begun
@@ -99,8 +100,9 @@ $Exe = Join-Path $AppDir "MapleSyrup.exe"
 $AudioDir = Join-Path $Here "audio"
 $ResultsDir = Join-Path $Here "results"
 $VariantsDir = Join-Path $Here "variants"
-# Speech nobody could make out, played as a question when it is there: the
-# call should say it didn't catch it.
+# Speech nobody could make out, played as a question: the call should say
+# it didn't catch it. (Made once, as one of the questions spoken backwards,
+# unless there is one already.)
 $UnclearFile = Join-Path $AudioDir "unclear.pcm"
 New-Item -ItemType Directory -Force -Path $AudioDir, $ResultsDir | Out-Null
 
@@ -207,6 +209,17 @@ public static class BenchAudio {
             pcm[2 * i + 1] = (byte)((v >> 8) & 0xff);
         }
         return pcm;
+    }
+
+    // The same speech backwards (16-bit PCM): speech-like, and nobody can
+    // make it out.
+    public static byte[] Backwards(byte[] pcm) {
+        var back = new byte[pcm.Length - pcm.Length % 2];
+        for (int i = 0, j = back.Length - 2; j >= 0; i += 2, j -= 2) {
+            back[i] = pcm[j];
+            back[i + 1] = pcm[j + 1];
+        }
+        return back;
     }
 
     // Where the speech in 16-bit PCM ends: tailBytes after the last sample
@@ -449,7 +462,8 @@ Write-Host "Measuring $Measured"
         return ,$all
     }
 
-    function Get-Speech([string]$Text) {
+    # The file of Text spoken (synthesized the first time).
+    function Get-SpeechFile([string]$Text) {
         $hash = -join ($Sha.ComputeHash([Text.Encoding]::UTF8.GetBytes("$TtsVoice|$TtsStyle|$Text")) | ForEach-Object { $_.ToString("x2") })
         $file = Join-Path $AudioDir "$hash.pcm"
         if (-not (Test-Path $file)) {
@@ -457,7 +471,11 @@ Write-Host "Measuring $Measured"
             Invoke-WebRequest -Method Post -Uri "https://api.openai.com/v1/audio/speech" -Headers @{ Authorization = "Bearer $OpenAiKey" } `
                 -Body ([Text.Encoding]::UTF8.GetBytes($body)) -ContentType "application/json; charset=utf-8" -OutFile $file -UseBasicParsing | Out-Null
         }
-        $pcm = Format-Speech ([IO.File]::ReadAllBytes($file))
+        return $file
+    }
+
+    function Get-Speech([string]$Text) {
+        $pcm = Format-Speech ([IO.File]::ReadAllBytes((Get-SpeechFile $Text)))
         return ,$pcm
     }
 
@@ -565,7 +583,10 @@ Write-Host "Measuring $Measured"
     $AllEvents = New-Object System.Collections.ArrayList
     $Specs = @($Lines | ForEach-Object { [pscustomobject]@{ Text = $_; Unclear = $false; Aside = $false } })
     $Specs += [pscustomobject]@{ Text = $Aside; Unclear = $false; Aside = $true }
-    if (Test-Path $UnclearFile) { $Specs += [pscustomobject]@{ Text = "(speech nobody could make out)"; Unclear = $true; Aside = $false } }
+    if (-not (Test-Path $UnclearFile)) {
+        [IO.File]::WriteAllBytes($UnclearFile, [BenchAudio]::Backwards([IO.File]::ReadAllBytes((Get-SpeechFile $BuiltIn[2]))))
+    }
+    $Specs += [pscustomobject]@{ Text = "(speech nobody could make out)"; Unclear = $true; Aside = $false }
     $Index = 0
     foreach ($Spec in $Specs) {
         $Index++
