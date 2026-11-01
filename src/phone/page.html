@@ -2291,7 +2291,13 @@
     rec.interimResults = true;
     rec.maxAlternatives = 1;
     current = -1; sentWords = 0; sentAll = ""; pending = "";
+    // Chrome's recogniser loses its connection now and then and is back at
+    // the next start: "needs the phone online" only when the phone is
+    // offline, or it keeps failing with nothing heard between.
+    let netFails = 0;
     rec.onresult = (e) => {
+      netFails = 0;
+      if ($("note").textContent === t("rec_offline")) note("");
       let shown = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
@@ -2306,7 +2312,8 @@
         wantRec = false;
         note(t("rec_not_allowed"));
       } else if (e.error === "network") {
-        note(t("rec_offline"));
+        netFails += 1;
+        if (!navigator.onLine || netFails >= 3) note(t("rec_offline"));
       } else {
         note(t("rec_error") + " " + e.error);
       }
