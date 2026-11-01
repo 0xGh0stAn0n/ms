@@ -644,22 +644,18 @@ into {NOTE_FILE} in the repository root.\n"
         text
     }
 
-    /// Run the coder on the checkout.
+    /// Run the coder on the checkout. The prompt goes in on its input (both
+    /// read it there): on the command line, through `cmd.exe` for npm's
+    /// shims, its quotes and `%` would be cmd's to read.
     fn code(&self, coder: Coder, program: &Path, prompt: &str, logs: &Path) -> Result<(), String> {
         let mut command = command_for(program);
         match coder {
             Coder::Claude => {
-                command.args([
-                    "-p",
-                    prompt,
-                    "--permission-mode",
-                    "acceptEdits",
-                    "--allowedTools",
-                ]);
+                command.args(["-p", "--permission-mode", "acceptEdits", "--allowedTools"]);
                 command.arg("Read,Edit,MultiEdit,Write,Glob,Grep,LS,Bash(cargo *),Bash(rustfmt *)");
             }
             Coder::Codex => {
-                command.args(["exec", "--full-auto", "--skip-git-repo-check", prompt]);
+                command.args(["exec", "--full-auto", "--skip-git-repo-check", "-"]);
             }
         }
         command.current_dir(&self.repo);
@@ -670,7 +666,12 @@ into {NOTE_FILE} in the repository root.\n"
         {
             command.env("OPENAI_API_KEY", key);
         }
-        let output = run_logged(command, CODER_TIMEOUT, &logs.join("coder.log"))?;
+        let output = run_logged(
+            command,
+            CODER_TIMEOUT,
+            &logs.join("coder.log"),
+            Some(prompt),
+        )?;
         if !output.success {
             return Err(format!("{} failed: {}", coder.label(), output.tail(3)));
         }
@@ -741,7 +742,7 @@ into {NOTE_FILE} in the repository root.\n"
             .args(["build", "--release", "--bin", "maplesyrup"])
             .current_dir(&self.repo);
         gently(&mut build);
-        let output = run_logged(build, BUILD_TIMEOUT, &logs.join("build.log"))?;
+        let output = run_logged(build, BUILD_TIMEOUT, &logs.join("build.log"), None)?;
         if !output.success {
             return Err(format!("the build failed: {}", output.tail(4)));
         }
@@ -751,7 +752,7 @@ into {NOTE_FILE} in the repository root.\n"
             test.args(["test", "--release", "--lib"])
                 .current_dir(&self.repo);
             gently(&mut test);
-            let output = run_logged(test, TEST_TIMEOUT, &logs.join("test.log"))?;
+            let output = run_logged(test, TEST_TIMEOUT, &logs.join("test.log"), None)?;
             if !output.success {
                 return Err(format!("the tests failed: {}", output.tail(4)));
             }
@@ -816,7 +817,7 @@ into {NOTE_FILE} in the repository root.\n"
     fn git(&self, args: &[&str]) -> Result<String, String> {
         let mut command = Command::new(&self.programs.git);
         command.args(args).current_dir(&self.repo);
-        let output = run_quiet(command, GIT_TIMEOUT)?;
+        let output = run_quiet(command, GIT_TIMEOUT, None)?;
         if !output.success {
             return Err(format!(
                 "git {} failed: {}",
@@ -881,9 +882,13 @@ impl Ran {
 }
 
 /// Run `command` with a time limit, its output kept in memory.
-fn run_quiet(mut command: Command, timeout: Duration) -> Result<Ran, String> {
+fn run_quiet(mut command: Command, timeout: Duration, input: Option<&str>) -> Result<Ran, String> {
     command
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -894,11 +899,20 @@ fn run_quiet(mut command: Command, timeout: Duration) -> Result<Ran, String> {
     let mut child = command
         .spawn()
         .map_err(|e| format!("could not run {:?}: {e}", command.get_program()))?;
+    // (Written on the side, and closed: read to its end.)
+    let stdin = child.stdin.take();
+    let input = input.unwrap_or("").to_string();
+    let feed = std::thread::spawn(move || {
+        if let Some(mut stdin) = stdin {
+            let _ = stdin.write_all(input.as_bytes());
+        }
+    });
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let out = std::thread::spawn(move || read_all(stdout));
     let err = std::thread::spawn(move || read_all(stderr));
     let status = wait_with_timeout(&mut child, timeout)?;
+    let _ = feed.join();
     Ok(Ran {
         success: status,
         stdout: out.join().unwrap_or_default(),
@@ -908,8 +922,13 @@ fn run_quiet(mut command: Command, timeout: Duration) -> Result<Ran, String> {
 
 /// Run `command` with a time limit, what it was and what it said written
 /// to `log` (and kept, for the summary).
-fn run_logged(command: Command, timeout: Duration, log: &Path) -> Result<Ran, String> {
-    let header = format!(
+fn run_logged(
+    command: Command,
+    timeout: Duration,
+    log: &Path,
+    input: Option<&str>,
+) -> Result<Ran, String> {
+    let mut header = format!(
         "{} {:?}\nin {:?}\nat {}\n",
         command.get_program().to_string_lossy(),
         command
@@ -919,8 +938,13 @@ fn run_logged(command: Command, timeout: Duration, log: &Path) -> Result<Ran, St
         command.get_current_dir(),
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
     );
+    if let Some(input) = input {
+        header.push_str("--- stdin ---\n");
+        header.extend(input.chars().take(2000));
+        header.push('\n');
+    }
     let _ = fs::write(log, &header);
-    let ran = run_quiet(command, timeout);
+    let ran = run_quiet(command, timeout, input);
     if let Ok(mut file) = fs::OpenOptions::new().append(true).create(true).open(log) {
         match &ran {
             Ok(ran) => {
@@ -1094,6 +1118,22 @@ mod tests {
         assert!(undo_request("undo the last change"));
         assert!(undo_request("תבטל את השינוי האחרון"));
         assert!(!undo_request("undo"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn what_a_program_is_given_to_read_reaches_it_whole() {
+        let prompt = "change \"this\" & that %PATH%\nand more\n".repeat(5000);
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat"]);
+        let ran = run_quiet(command, Duration::from_secs(30), Some(&prompt)).unwrap();
+        assert!(ran.success);
+        assert_eq!(ran.stdout, prompt);
+        // Nothing to read: its input is empty, not the console's.
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat"]);
+        let ran = run_quiet(command, Duration::from_secs(30), None).unwrap();
+        assert_eq!(ran.stdout, "");
     }
 
     #[test]
