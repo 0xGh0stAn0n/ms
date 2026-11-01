@@ -225,7 +225,8 @@ impl<S: Read + Write> Conn<S> {
         for (name, value) in &response.headers {
             head.push_str(name);
             head.push_str(": ");
-            head.push_str(value);
+            // (A line break would end the header there.)
+            head.extend(value.chars().filter(|c| !matches!(c, '\r' | '\n')));
             head.push_str("\r\n");
         }
         head.push_str("\r\n");

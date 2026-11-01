@@ -1441,24 +1441,45 @@ fn serve_connection<S: Read + Write>(hub: &Hub, stream: S) {
 fn redirect_to_https(stream: TcpStream, port: u16) {
     let mut conn = Conn::new(stream);
     if let Ok(Some(request)) = conn.read_request(0) {
-        let host = request
-            .header("host")
-            .map(|h| h.split(':').next().unwrap_or(h).to_string())
-            .unwrap_or_else(|| "localhost".into());
-        let query: Vec<String> = request
-            .query
-            .iter()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
-        let target = if query.is_empty() {
-            format!("https://{host}:{port}{}", request.path)
-        } else {
-            format!("https://{host}:{port}{}?{}", request.path, query.join("&"))
-        };
+        let target = https_target(&request, port);
         let response =
             Response::text(301, format!("Use {target}\n")).with_header("Location", target);
         let _ = conn.write_response(&response, false);
     }
+}
+
+/// The `https://` address of what `request` asked for: its host (a name or
+/// an address, else "localhost") and what was decoded from its path and
+/// query encoded again, so that nothing but plain characters goes back.
+fn https_target(request: &Request, port: u16) -> String {
+    let host = request
+        .header("host")
+        .map(|h| h.split(':').next().unwrap_or(h))
+        .filter(|h| {
+            !h.is_empty()
+                && h.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+        })
+        .unwrap_or("localhost");
+    let encode = |text: &str, keep: &[u8]| -> String {
+        text.bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || b"-._~".contains(&b) || keep.contains(&b) {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect()
+    };
+    let mut target = format!("https://{host}:{port}{}", encode(&request.path, b"/"));
+    for (i, (k, v)) in request.query.iter().enumerate() {
+        target.push(if i == 0 { '?' } else { '&' });
+        target.push_str(&encode(k, b""));
+        target.push('=');
+        target.push_str(&encode(v, b""));
+    }
+    target
 }
 
 struct Slot(Arc<AtomicUsize>);
@@ -1930,6 +1951,28 @@ mod tests {
             .push(("Content-Type".into(), "text/plain;charset=UTF-8".into()));
         assert_eq!(hub.handle(&stray).status, 403);
         assert!(hub.take_inbox().is_empty());
+    }
+
+    #[test]
+    fn the_way_to_https_keeps_the_address_and_nothing_else() {
+        let mut asked = request("GET", "/api/state?k=k1&x=a%20b", "");
+        asked
+            .headers
+            .push(("host".into(), "192.168.1.5:8443".into()));
+        assert_eq!(
+            https_target(&asked, 8443),
+            "https://192.168.1.5:8443/api/state?k=k1&x=a%20b"
+        );
+        let mut asked = request("GET", "/?a=%0d%0aSet-Cookie:%20x=1", "");
+        asked
+            .headers
+            .push(("host".into(), "pc\r\nX-Other: 1".into()));
+        let target = https_target(&asked, 8443);
+        assert_eq!(
+            target,
+            "https://localhost:8443/?a=%0D%0ASet-Cookie%3A%20x%3D1"
+        );
+        assert!(!target.contains(['\r', '\n']));
     }
 
     #[test]
