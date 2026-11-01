@@ -948,17 +948,7 @@ impl Facts {
 /// later ("HP 34%" after a potion took it to 43%). Only a number in a
 /// sentence that names the bar is touched.
 pub fn freshen(sentence: &str, asked: &Facts, now: &Facts) -> String {
-    const HP: &[&str] = &["hp", "health", "life", "חיים"];
-    const MP: &[&str] = &["mp", "mana", "מאנה", "מנה"];
-    let lower = sentence.to_lowercase();
-    let names = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-    let moved: Vec<(f32, f32)> = [(asked.hp, now.hp, HP), (asked.mp, now.mp, MP)]
-        .into_iter()
-        .filter_map(|(was, is, words)| {
-            let (was, is) = (was?, is?);
-            ((was - is).abs() >= 5.0 && names(words)).then_some((was, is))
-        })
-        .collect();
+    let moved = moved_bars(sentence, asked, now);
     if moved.is_empty() {
         return sentence.to_string();
     }
@@ -983,6 +973,35 @@ pub fn freshen(sentence: &str, asked: &Facts, now: &Facts) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The bars `sentence` names whose percent moved by 5 points or more from
+/// `asked` to `now`: (then, now) each.
+fn moved_bars(sentence: &str, asked: &Facts, now: &Facts) -> Vec<(f32, f32)> {
+    const HP: &[&str] = &["hp", "health", "life", "חיים"];
+    const MP: &[&str] = &["mp", "mana", "מאנה", "מנה"];
+    let lower = sentence.to_lowercase();
+    let names = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    [(asked.hp, now.hp, HP), (asked.mp, now.mp, MP)]
+        .into_iter()
+        .filter_map(|(was, is, words)| {
+            let (was, is) = (was?, is?);
+            ((was - is).abs() >= 5.0 && names(words)).then_some((was, is))
+        })
+        .collect()
+}
+
+/// Whether `sentence` gives a bar's percent as `asked` had it, and the bar
+/// has moved since: advice nobody asked for that is about a moment gone
+/// ("drink a potion, you're at 12%" with HP back at 100%), to be dropped
+/// rather than corrected ([`freshen`] is for an answer).
+pub fn stale(sentence: &str, asked: &Facts, now: &Facts) -> bool {
+    let moved = moved_bars(sentence, asked, now);
+    !moved.is_empty()
+        && sentence
+            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter_map(|n| n.trim_end_matches('.').parse::<f32>().ok())
+            .any(|n| moved.iter().any(|(was, _)| (n - was).abs() <= 0.6))
 }
 
 /// Words a player asks about the game with ("what level am I", "where
@@ -4869,6 +4888,25 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             bars: vec![100.0, 100.0, 49.84],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn advice_about_a_bar_that_has_moved_since_is_stale() {
+        let asked = Facts {
+            hp: Some(12.0),
+            mp: Some(80.0),
+            ..Default::default()
+        };
+        let now = Facts {
+            hp: Some(100.0),
+            mp: Some(80.0),
+            ..Default::default()
+        };
+        assert!(stale("Drink a potion, you're at 12% HP.", &asked, &now));
+        assert!(!stale("Drink a potion.", &asked, &now));
+        assert!(!stale("MP 80%, fine.", &asked, &now));
+        assert!(!stale("Kill 12 more snails.", &asked, &now));
+        assert!(!stale("HP 12%!", &asked, &asked));
     }
 
     #[test]

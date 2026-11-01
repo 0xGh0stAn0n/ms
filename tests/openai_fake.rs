@@ -132,6 +132,30 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                     events.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n");
                                     Response::new(200, "text/event-stream", events.into_bytes())
                                 }
+                                // A model that answers from the snapshot it was
+                                // given (HP 40%, or 12% for the coach) while the
+                                // game has moved on.
+                                Some(_) if body["input"].to_string().contains("stale-hp") => {
+                                    let text = if body["input"].to_string().contains("coach-look") {
+                                        "Drink a potion, you're at 12% HP. Nice dodge on that last hit."
+                                    } else {
+                                        "Your HP is at 40%. Keep going."
+                                    };
+                                    if body["stream"] == true {
+                                        let events = format!(
+                                            "event: response.output_text.delta\ndata: {}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{}}}}\n\n",
+                                            json!({"type": "response.output_text.delta", "delta": text})
+                                        );
+                                        Response::new(200, "text/event-stream", events.into_bytes())
+                                    } else {
+                                        Response::json(
+                                            200,
+                                            &json!({"output": [{"type": "message", "role": "assistant", "content": [
+                                                {"type": "output_text", "text": text}
+                                            ]}]}),
+                                        )
+                                    }
+                                }
                                 Some(model) if body["stream"] == true => {
                                     let last = body["input"]
                                         .as_array()
@@ -783,6 +807,54 @@ The quest marker is four maps to the left. Go!"
 
 /// What came of reply `id`: its text (None: it was silent), the lines its
 /// voice began, and the notes that came with it, once the voice is done.
+#[test]
+fn what_is_said_of_a_bar_is_as_it_is_when_said() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let facts = |hp: f32| ms::ai::brain::Facts {
+        hp: Some(hp),
+        ..Default::default()
+    };
+    // Asked at 40%; by the time the answer is said, HP is 52%.
+    *worker.now.lock().unwrap() = facts(52.0);
+    let id = worker.send(Job::Converse {
+        heard: "stale-hp is my health ok".into(),
+        snapshot: "HP about 40%".into(),
+        facts: facts(40.0),
+        speak: true,
+        eyes: None,
+        language: None,
+    });
+    let (_, spoken, _) = outcome(&worker, id);
+    assert_eq!(spoken.join(" "), "Your HP is at 52%. Keep going.");
+    // The coach looked at 12%; HP is back at 100%: the potion is left out.
+    *worker.now.lock().unwrap() = facts(100.0);
+    let id = worker.send(Job::Coach {
+        reason: "coach-look".into(),
+        label: "look".into(),
+        snapshot: "stale-hp coach-look HP about 12%".into(),
+        facts: facts(12.0),
+        eyes: None,
+        said: Vec::new(),
+        language: None,
+        speak: true,
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)).unwrap() {
+            Done::Coached { id: of, text, .. } if of == id => {
+                assert_eq!(text.as_deref(), Some("Nice dodge on that last hit."));
+                break;
+            }
+            Done::Failed { error, .. } => panic!("{error}"),
+            _ => {}
+        }
+    }
+}
+
 fn outcome(worker: &ms::ai::Worker, id: u64) -> (Option<String>, Vec<String>, Vec<String>) {
     let (mut text, mut done, mut spoken, mut notes) = (None, false, Vec::new(), Vec::new());
     loop {
@@ -1315,6 +1387,7 @@ fn a_warning_never_waits_for_a_look() {
     let worker = ms::ai::spawn(ai, Brain::new());
     // A look under way that takes three seconds (a slow day)…
     let look = worker.send(Job::Coach {
+        facts: Default::default(),
         reason: "They just arrived somewhere new (think it over).".into(),
         label: "new scene".into(),
         snapshot: "HP 80%".into(),
@@ -1430,6 +1503,7 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     let worker = ms::ai::spawn(ai, Brain::new());
     let look = |speak: bool| {
         worker.send(Job::Coach {
+            facts: Default::default(),
             reason: "They just arrived somewhere new (voice hangs).".into(),
             label: "new scene".into(),
             snapshot: "HP 80%".into(),
@@ -1494,6 +1568,7 @@ fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
     let worker = ms::ai::spawn(ai, Brain::new());
     let look = |reason: &str| {
         worker.send(Job::Coach {
+            facts: Default::default(),
             reason: reason.into(),
             label: "a look".into(),
             snapshot: "HP 80%".into(),
@@ -1604,6 +1679,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     let worker = ms::ai::spawn(ai, Brain::new());
     // A look at a quiet game: nothing to say, nothing shown or spoken.
     let quiet = worker.send(Job::Coach {
+        facts: Default::default(),
         reason:
             "Nothing in particular happened (nothing is happening); a callout only if deserved."
                 .into(),
@@ -1631,6 +1707,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     }
     // Somewhere new: a line, shown as an alert, said, and reported.
     let scene = worker.send(Job::Coach {
+        facts: Default::default(),
         reason: "They just arrived somewhere new.".into(),
         label: "new scene".into(),
         snapshot: "HP 80%".into(),

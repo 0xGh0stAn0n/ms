@@ -3904,6 +3904,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         reason: reason.describe(companion.settings.attitude),
                         label: reason.label(),
                         snapshot,
+                        facts: ai::brain::Facts::of(companion.last()),
                         eyes,
                         said: coach.lines(),
                         language: player_language.clone(),

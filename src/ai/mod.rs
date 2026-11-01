@@ -373,6 +373,9 @@ pub enum Job {
         reason: String,
         label: String,
         snapshot: String,
+        /// What the snapshot says of the game: a line about a bar that has
+        /// moved since is dropped ([`brain::stale`]).
+        facts: brain::Facts,
         eyes: Option<Eyes>,
         said: Vec<String>,
         language: Option<String>,
@@ -856,6 +859,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             reason,
                             label,
                             snapshot,
+                            facts,
                             eyes,
                             said,
                             language,
@@ -876,6 +880,8 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     reason: &reason,
                                     label,
                                     snapshot: &snapshot,
+                                    facts: &facts,
+                                    now: &now_slot,
                                     eyes: eyes.as_ref(),
                                     said: &said,
                                     language: language.as_deref(),
@@ -1466,6 +1472,8 @@ struct Watch<'a> {
     reason: &'a str,
     label: String,
     snapshot: &'a str,
+    facts: &'a brain::Facts,
+    now: &'a std::sync::Mutex<brain::Facts>,
     eyes: Option<&'a Eyes>,
     said: &'a [String],
     language: Option<&'a str>,
@@ -1483,6 +1491,8 @@ fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Send
         reason,
         label,
         snapshot,
+        facts,
+        now,
         eyes,
         said,
         language,
@@ -1573,7 +1583,26 @@ engine:\n{snapshot}\n\n{reason}"
                     ),
                 });
             }
-            let line = filtered.text;
+            // A sentence about a bar that has moved since the look is
+            // advice for a moment gone: left out.
+            let line = match now.lock() {
+                Ok(now) => {
+                    let (kept, gone): (Vec<String>, Vec<String>) =
+                        brain::sentences_of(&filtered.text)
+                            .into_iter()
+                            .partition(|s| !brain::stale(s, facts, &now));
+                    if !gone.is_empty() {
+                        let _ = tx.send(Done::Noted {
+                            line: format!(
+                                "{label}: left out, the bar moved since: {}",
+                                gone.join(" ")
+                            ),
+                        });
+                    }
+                    kept.join(" ")
+                }
+                Err(_) => filtered.text,
+            };
             if !line.is_empty() && !stop.stopped() {
                 brain.watched(&label, &line);
                 if speak {
