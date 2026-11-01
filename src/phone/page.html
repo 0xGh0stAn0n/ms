@@ -492,10 +492,21 @@
 (() => {
   "use strict";
   const $ = (id) => document.getElementById(id);
-  const KEY = new URLSearchParams(location.search).get("k") || "";
   const store = (() => { try { return window.localStorage; } catch (e) { return null; } })();
   const remember = (k, v) => { try { store && store.setItem("ms." + k, v); } catch (e) {} };
   const recall = (k) => { try { return store ? store.getItem("ms." + k) : null; } catch (e) { return null; } };
+  // The link's key: taken off the address (out of the history, and of the
+  // address a tunnel sees) and kept on this phone; sent in a header.
+  const KEY = (() => {
+    const params = new URLSearchParams(location.search);
+    const k = params.get("k");
+    if (!k) return recall("key") || "";
+    remember("key", k);
+    params.delete("k");
+    const rest = params.toString();
+    try { history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash); } catch (e) {}
+    return k;
+  })();
 
   // ---- languages ------------------------------------------------------------
   // The page's words in each language; anything missing falls back to English.
@@ -1127,8 +1138,9 @@
   }
 
   function api(path, options) {
-    const sep = path.includes("?") ? "&" : "?";
-    return fetch(path + sep + "k=" + encodeURIComponent(KEY), Object.assign({ cache: "no-store" }, options || {}));
+    const o = Object.assign({ cache: "no-store" }, options || {});
+    o.headers = Object.assign({ "X-MapleSyrup-Key": KEY }, o.headers || {});
+    return fetch(path, o);
   }
   function postJson(path, body) {
     return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });

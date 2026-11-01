@@ -742,10 +742,15 @@ impl Hub {
                 None => Response::text(404, "not found"),
             },
             (_, path) if path.starts_with("/api/") => {
+                // (In a header from the page; in the address for what a
+                // header cannot go with: a picture, a clip, a beacon.)
                 let key = request
-                    .param("k")
-                    .or_else(|| request.header("x-maplesyrup-key"));
-                if key != Some(self.key.as_str()) {
+                    .header("x-maplesyrup-key")
+                    .or_else(|| request.param("k"))
+                    .unwrap_or("");
+                if self.key.is_empty()
+                    || !crate::claude::board::same(key.as_bytes(), self.key.as_bytes())
+                {
                     return Response::json(
                         403,
                         &json!({"error": "This link is out of date. Scan the code on the PC again."}),
@@ -1925,6 +1930,27 @@ mod tests {
             .push(("Content-Type".into(), "text/plain;charset=UTF-8".into()));
         assert_eq!(hub.handle(&stray).status, 403);
         assert!(hub.take_inbox().is_empty());
+    }
+
+    #[test]
+    fn the_key_comes_in_a_header_or_the_address() {
+        let hub = hub();
+        let mut asked = request("GET", "/api/state", "");
+        asked.headers.push(("X-MapleSyrup-Key".into(), "k1".into()));
+        assert_eq!(hub.handle(&asked).status, 200);
+        assert_eq!(
+            hub.handle(&request("GET", "/api/state?k=k1", "")).status,
+            200
+        );
+        for wrong in ["k2", "k", "k1k1", ""] {
+            let mut asked = request("GET", "/api/state", "");
+            asked
+                .headers
+                .push(("x-maplesyrup-key".into(), wrong.into()));
+            assert_eq!(hub.handle(&asked).status, 403, "{wrong:?}");
+            let target = format!("/api/state?k={wrong}");
+            assert_eq!(hub.handle(&request("GET", &target, "")).status, 403);
+        }
     }
 
     fn body(response: &Response) -> Value {

@@ -1021,7 +1021,7 @@ pub fn region(name: &str) -> Option<crate::ai::images::NBox> {
 
 /// Byte strings compared in a time that does not depend on where they
 /// differ.
-fn same(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn same(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y)) == 0
 }
 
