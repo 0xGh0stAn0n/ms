@@ -277,7 +277,13 @@ public class BenchSocket {
 [BenchTls]::TrustLocalLink()
 
 # ---- MapleSyrup: running, or started for the run --------------------------
-$LinkKey = (Get-Content -Raw (Join-Path $Settings "link-key.txt")).Trim()
+# A key as MapleSyrup saves it (a byte-order mark, quotes or lines after it
+# are not the key).
+function Read-Key([string]$File) {
+    $text = (Get-Content -Raw -Encoding UTF8 $File).TrimStart([char]0xFEFF).Trim()
+    return ($text -split "`r?`n")[0].Trim().Trim([char]34, [char]39).Trim()
+}
+$LinkKey = Read-Key (Join-Path $Settings "link-key.txt")
 $Base = "https://127.0.0.1:$Port"
 
 function Invoke-Link([string]$Method, [string]$Path, $Body) {
@@ -319,7 +325,8 @@ try {
     $Lines = if (Test-Path $QuestionsFile) {
         Get-Content -Encoding UTF8 $QuestionsFile | Where-Object { $_.Trim() }
     } else { $BuiltIn }
-    $OpenAiKey = (Get-Content -Raw (Join-Path $Settings "openai-key.txt")).Trim()
+    # (MapleSyrup's own: OPENAI_API_KEY when set, else its settings' file.)
+    $OpenAiKey = if ($env:OPENAI_API_KEY -like "sk-*") { $env:OPENAI_API_KEY.Trim() } else { Read-Key (Join-Path $Settings "openai-key.txt") }
     $Sha = [Security.Cryptography.SHA1]::Create()
 
     function Get-Speech([string]$Text) {
