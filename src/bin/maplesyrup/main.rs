@@ -4472,7 +4472,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 settings: settings_dir.clone(),
                                 web: options.web,
                                 learning: Some(learning.clone()),
-                                workshop: Some(Arc::clone(&workshop)),
                             },
                             learning: learning.clone(),
                             board: std::sync::OnceLock::new(),
@@ -4486,7 +4485,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         settings: settings_dir.clone(),
                         web: options.web,
                         learning: Some(learning.clone()),
-                        workshop: Some(Arc::clone(&workshop)),
                     };
                     lookups = Some(ai::lookup::Lookups::new(
                         Arc::new(OpenAi::new(
@@ -6224,17 +6222,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         ai::Effect::Language(locale) => {
                             out.ask_language(&locale, &mut player_language, &mut companion, false);
                         }
-                        ai::Effect::Rewrite(instruction) => {
-                            out.session
-                                .line("workshop", &format!("asked on the call: {instruction}"));
-                            let task = ms::workshop::Task::Change {
-                                instruction,
-                                context: recent_log(&out),
-                            };
-                            if let Err(why) = workshop.ask(task) {
-                                out.push(Kind::Info, format!("couldn't start the change: {why}"));
-                            }
-                        }
                     },
                     Inbound::Command(word) => {
                         if let Some(command) = Command::from_word(&word) {
@@ -6718,21 +6705,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         on,
                         now,
                     );
-                }
-                Done::Rewrite { instruction } => {
-                    out.session.line(
-                        "workshop",
-                        &format!("asked through the model: {instruction}"),
-                    );
-                    let task = ms::workshop::Task::Change {
-                        instruction,
-                        context: recent_log(&out),
-                    };
-                    // The model already told the player; only a refusal is
-                    // worth a line.
-                    if let Err(why) = workshop.ask(task) {
-                        out.push(Kind::Info, format!("couldn't start the change: {why}"));
-                    }
                 }
                 Done::Command { word } if word == ai::tools::RECORD_ON => recording.start(&mut out),
                 Done::Command { word } if word == ai::tools::RECORD_OFF => {

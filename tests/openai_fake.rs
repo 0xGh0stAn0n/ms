@@ -629,7 +629,6 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::Language { locale }) => panic!("language: {locale}"),
             Ok(Done::LookUp { question, .. }) => panic!("look-up: {question}"),
             Ok(Done::Coached { label, .. }) => panic!("coached: {label}"),
-            Ok(Done::Rewrite { instruction }) => panic!("rewrite: {instruction}"),
             Ok(Done::Voiced { .. }) => {}
             Err(e) => panic!("{e}: {reply:?} {lines:?}"),
         }
@@ -2185,7 +2184,6 @@ fn describe(done: Result<Done, std::sync::mpsc::RecvTimeoutError>) -> String {
         Ok(Done::Language { locale }) => format!("language: {locale}"),
         Ok(Done::LookUp { question, .. }) => format!("look-up: {question}"),
         Ok(Done::Coached { label, text, .. }) => format!("coached: {label}: {text:?}"),
-        Ok(Done::Rewrite { instruction }) => format!("rewrite: {instruction}"),
         Ok(Done::Voiced { id }) => format!("voiced: {id}"),
         Err(e) => e.to_string(),
     }
@@ -2560,7 +2558,6 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
 /// Tools for a test: nothing learned on screen, eyes that are never asked.
 fn toolbox(base: &str, settings: &std::path::Path, learning: &ms::ai::Learning) -> ms::ai::Toolbox {
     ms::ai::Toolbox {
-        workshop: None,
         sight: Arc::new(Mutex::new(ms::sight::Sight::load(
             &settings.join("learned"),
         ))),
