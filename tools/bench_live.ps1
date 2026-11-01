@@ -305,6 +305,14 @@ if (-not (Test-Link)) {
     }
 }
 
+# Which MapleSyrup is measured: its program and when it was built (the
+# installed one if it was running, else the one beside this bench).
+$Measured = try {
+    $proc = Get-Process -Name "MapleSyrup" -ErrorAction Stop | Select-Object -First 1
+    "{0} ({1})" -f $proc.Path, (Get-Item $proc.Path).LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+} catch { "unknown" }
+Write-Host "Measuring $Measured"
+
 try {
     # ---- the questions, as speech (synthesized once, then kept) -----------
     $QuestionsFile = if ($Questions) { $Questions } else { Join-Path $Here "questions.txt" }
@@ -551,7 +559,7 @@ try {
     $Stamp = Get-Date -Format "yyyy-MM-dd HH-mm-ss"
     $Name = if ($Label) { "$Stamp $Label" } else { $Stamp }
     $Report = [ordered]@{
-        when = (Get-Date -Format o); label = $Label; model = $Call.model
+        when = (Get-Date -Format o); label = $Label; measured = $Measured; model = $Call.model
         session = [ordered]@{ reasoning = $Session.reasoning; turn_detection = $Session.audio.input.turn_detection; noise_reduction = $Session.audio.input.noise_reduction; transcription = $Session.audio.input.transcription; voice = $Session.audio.output.voice; speed = $Session.audio.output.speed }
         turns = $Turns; noise = $NoiseTurn; pause = $PauseTurn; talk_over = $OverTurn; events = $AllEvents; error = $Socket.Error
     }
@@ -561,6 +569,7 @@ try {
     $median = { param($xs) if ($xs.Count) { $xs[[int][math]::Floor(($xs.Count - 1) / 2)] } else { $null } }
     $Summary = @(
         "MapleSyrup live call bench — $Name",
+        "measured: $Measured",
         "model $($Call.model); reasoning $($Session.reasoning.effort); turn detection $($Session.audio.input.turn_detection.type) $($Session.audio.input.turn_detection.eagerness); noise reduction $($Session.audio.input.noise_reduction.type)",
         ("first sound after the question ended: median {0} ms, min {1}, max {2} (n={3})" -f (& $median $sounds), ($sounds | Select-Object -First 1), ($sounds | Select-Object -Last 1), $sounds.Count),
         ("of which hearing the question stop: median {0} ms" -f (& $median $vads)),
