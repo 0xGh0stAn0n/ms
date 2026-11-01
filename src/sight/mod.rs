@@ -805,8 +805,7 @@ impl Sight {
     /// them, the EXP bar's wrap, and the things the player taught.
     /// Does the sight see the HUD on a screen this shape: a layout that
     /// fits it, whose bars it measured the last time it looked? Then its
-    /// bars and numbers answer for the HUD and the geometry detector can
-    /// rest ([`crate::perceive`]).
+    /// bars and numbers answer for the HUD.
     pub fn sees_hud(&self, width: u32, height: u32) -> bool {
         self.lost_since.is_none()
             && self
