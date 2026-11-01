@@ -468,7 +468,7 @@ const KEPT_REMEMBERED: usize = 64;
 
 /// What the thinking lane is handed: a job, or word from the mouth lane.
 enum Work {
-    Job(u64, Job),
+    Job(u64, Box<Job>),
     /// The mouth lane handed one of MapleSyrup's own lines to the voice
     /// (`kind`; `text` as said, in the player's language): the
     /// conversation keeps it, so the next reply knows its own last words.
@@ -487,6 +487,9 @@ pub struct Worker {
     pub done: Receiver<Done>,
     busy: Arc<AtomicBool>,
     pub model: Arc<std::sync::Mutex<Option<String>>>,
+    /// What the screen says now, kept up by the main loop: a reply's bars
+    /// are said as they are when it is heard ([`brain::freshen`]).
+    pub now: Arc<std::sync::Mutex<brain::Facts>>,
     /// The number the next job gets (from 1).
     next: AtomicU64,
     /// Jobs numbered up to this are called off.
@@ -509,7 +512,7 @@ impl Worker {
         }
         let _ = match job {
             Job::Speak { .. } => self.lines.send((id, job)).is_ok(),
-            job => self.jobs.send(Work::Job(id, job)).is_ok(),
+            job => self.jobs.send(Work::Job(id, Box::new(job))).is_ok(),
         };
         id
     }
@@ -609,6 +612,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
     let (tx, done) = channel::<Done>();
     let busy = Arc::new(AtomicBool::new(false));
     let model = Arc::new(std::sync::Mutex::new(None));
+    let now = Arc::new(std::sync::Mutex::new(brain::Facts::default()));
     let mark = Arc::new(AtomicU64::new(0));
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
     // One voice for both lanes; ElevenLabs failing is said once.
@@ -682,9 +686,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 }
             });
     }
-    let (busy_flag, model_slot, marks, kept_jobs) = (
+    let (busy_flag, model_slot, now_slot, marks, kept_jobs) = (
         Arc::clone(&busy),
         Arc::clone(&model),
+        Arc::clone(&now),
         Arc::clone(&mark),
         Arc::clone(&kept),
     );
@@ -709,10 +714,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 // main loop folds what came before into it.
                 let newest = queue
                     .iter()
-                    .rposition(|work| matches!(work, Work::Job(_, Job::Converse { .. })));
+                    .rposition(|work| matches!(work, Work::Job(_, job) if matches!(**job, Job::Converse { .. })));
                 for (i, work) in queue.into_iter().enumerate() {
                     let (id, job) = match work {
-                        Work::Job(id, job) => (id, job),
+                        Work::Job(id, job) => (id, *job),
                         Work::Said { kind, text } => {
                             brain.watched(label_of(kind), &text);
                             continue;
@@ -907,6 +912,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     heard,
                                     snapshot: &snapshot,
                                     facts: &facts,
+                                    now: &now_slot,
                                     eyes: eyes.as_ref(),
                                     speak,
                                     language: language.as_deref(),
@@ -958,6 +964,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
         done,
         busy,
         model,
+        now,
         next: AtomicU64::new(1),
         mark,
         kept,
@@ -1615,6 +1622,7 @@ struct Talk<'a> {
     heard: String,
     snapshot: &'a str,
     facts: &'a brain::Facts,
+    now: &'a std::sync::Mutex<brain::Facts>,
     eyes: Option<&'a Eyes>,
     speak: bool,
     language: Option<&'a str>,
@@ -1632,6 +1640,7 @@ struct Saying<'a> {
     /// goes ([`brain::without_status`]).
     unasked: bool,
     facts: &'a brain::Facts,
+    now: &'a std::sync::Mutex<brain::Facts>,
     /// Whether he asked about the level, or to be congratulated, now or
     /// just before: else a level-up is not said ([`brain::without_level_ups`]).
     level_asked: bool,
@@ -1665,6 +1674,10 @@ impl Saying<'_> {
             }
         } else {
             sentence.to_string()
+        };
+        let sentence = match self.now.lock() {
+            Ok(now) => brain::freshen(&sentence, self.facts, &now),
+            Err(_) => sentence,
         };
         self.total += 1;
         if self.again || recent.fresh(&sentence) {
@@ -1712,6 +1725,7 @@ fn converse<'a>(
         heard,
         snapshot,
         facts,
+        now,
         eyes,
         speak,
         language,
@@ -1770,6 +1784,7 @@ fn converse<'a>(
         again: brain::asks_again(&heard),
         unasked: !brain::asks_about_the_game(&heard),
         facts,
+        now,
         level_asked: brain::asks_about_the_level(&heard)
             || turns
                 .iter()

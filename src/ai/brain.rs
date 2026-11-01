@@ -911,6 +911,9 @@ pub struct Facts {
     pub job: Option<String>,
     /// HP, MP and EXP, in percent, as far as they are known.
     pub bars: Vec<f32>,
+    /// HP and MP in percent, by name ([`freshen`]).
+    pub hp: Option<f32>,
+    pub mp: Option<f32>,
 }
 
 impl Facts {
@@ -930,8 +933,53 @@ impl Facts {
                 .flatten()
                 .map(|g| g.percent)
                 .collect(),
+            hp: obs.hp.map(|g| g.percent),
+            mp: obs.mp.map(|g| g.percent),
         }
     }
+}
+
+/// `sentence` with the HP or MP it gives as `asked` had it, when the bar
+/// has moved since (by 5 points or more), given as it is `now`: the reply
+/// is written from the snapshot taken when he spoke, and heard seconds
+/// later ("HP 34%" after a potion took it to 43%). Only a number in a
+/// sentence that names the bar is touched.
+pub fn freshen(sentence: &str, asked: &Facts, now: &Facts) -> String {
+    const HP: &[&str] = &["hp", "health", "life", "חיים"];
+    const MP: &[&str] = &["mp", "mana", "מאנה", "מנה"];
+    let lower = sentence.to_lowercase();
+    let names = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+    let moved: Vec<(f32, f32)> = [(asked.hp, now.hp, HP), (asked.mp, now.mp, MP)]
+        .into_iter()
+        .filter_map(|(was, is, words)| {
+            let (was, is) = (was?, is?);
+            ((was - is).abs() >= 5.0 && names(words)).then_some((was, is))
+        })
+        .collect();
+    if moved.is_empty() {
+        return sentence.to_string();
+    }
+    let mut out = String::with_capacity(sentence.len());
+    let mut rest = sentence;
+    while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(rest.len());
+        let number = rest[..end].trim_end_matches('.');
+        let said = number.parse::<f32>().ok();
+        match moved
+            .iter()
+            .find(|(was, _)| said.is_some_and(|n| (n - was).abs() <= 0.6))
+        {
+            Some((_, is)) => out.push_str(&format!("{is:.0}")),
+            None => out.push_str(number),
+        }
+        rest = &rest[number.len()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Words a player asks about the game with ("what level am I", "where
@@ -4803,6 +4851,7 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: None,
             job: None,
             bars: vec![48.0, 40.0],
+            ..Default::default()
         }
     }
 
@@ -4813,7 +4862,35 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WANWANBUJIO".into()),
             job: Some("Beginner".into()),
             bars: vec![100.0, 100.0, 49.84],
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_bar_that_moved_since_he_asked_is_said_as_it_is_now() {
+        let asked = Facts {
+            hp: Some(34.0),
+            mp: Some(80.0),
+            ..Default::default()
+        };
+        let now = Facts {
+            hp: Some(43.2),
+            mp: Some(80.0),
+            ..Default::default()
+        };
+        assert_eq!(
+            freshen("Your HP is at 34%, drink a potion.", &asked, &now),
+            "Your HP is at 43%, drink a potion."
+        );
+        // MP did not move; a number that is not the bar's stays.
+        assert_eq!(
+            freshen("MP 80%, 3 snails left.", &asked, &now),
+            "MP 80%, 3 snails left."
+        );
+        assert_eq!(freshen("Kill 34 snails.", &asked, &now), "Kill 34 snails.");
+        assert_eq!(freshen("החיים שלך 34.0%.", &asked, &now), "החיים שלך 43%.");
+        // Unknown now: left as said.
+        assert_eq!(freshen("HP 34%", &asked, &Facts::default()), "HP 34%");
     }
 
     #[test]
@@ -5012,6 +5089,7 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWanBoggi".into()),
             job: Some("Night Lord".into()),
             bars: vec![],
+            ..Default::default()
         };
         let main = Facts {
             bars: vec![48.0, 90.0, 34.36],
@@ -5107,6 +5185,7 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWanBoggi".into()),
             job: Some("Night Lord".into()),
             bars: vec![48.0, 90.0, 34.36],
+            ..Default::default()
         };
         let closed = Facts {
             bars: vec![],
@@ -5118,6 +5197,7 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWan".into()),
             job: Some("Night Lord".into()),
             bars: vec![76.0, 22.0, 34.5],
+            ..Default::default()
         };
         let (nine, nine_low, ten, ten_low) =
             (at(9, 100.0), at(9, 48.0), at(10, 100.0), at(10, 48.0));
@@ -5459,6 +5539,7 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWanBoggi".into()),
             job: Some("Night Lord".into()),
             bars: vec![hp, 90.0, 34.36],
+            ..Default::default()
         }
     }
 

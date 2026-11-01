@@ -1114,8 +1114,10 @@ impl Sight {
     /// or it cannot answer), the fill as it is.
     fn judge_fill(&mut self, i: usize, fill: Option<f32>, now: Instant) -> Option<f32> {
         let fill = fill?;
-        let Some(told) =
-            self.told[i].filter(|t| now.saturating_duration_since(t.at) <= TOLD_JUDGES)
+        // (A read of 0 is a death: the next life starts full, and its fill
+        // is no misread of the 0.)
+        let Some(told) = self.told[i]
+            .filter(|t| now.saturating_duration_since(t.at) <= TOLD_JUDGES && t.percent > 0.5)
         else {
             return Some(fill);
         };
@@ -2744,6 +2746,26 @@ mod tests {
         );
         let seen = sight.observe(&status_bar(29.0, 100.0), t0 + Duration::from_secs(6));
         assert!((seen.hp.unwrap() - 29.0).abs() < 2.0, "{seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn after_a_death_read_the_revived_fill_is_believed() {
+        let dir = temp_dir("revived");
+        let mut sight = Sight::load(&dir);
+        sight
+            .calibrated(&status_bar(60.0, 100.0), &calibration())
+            .unwrap();
+        sight.verified(
+            &status_bar(0.0, 100.0),
+            &HudValues {
+                hp: Some((0, 5000)),
+                mp: Some((2000, 2000)),
+                ..Default::default()
+            },
+        );
+        let seen = sight.observe(&status_bar(100.0, 100.0), Instant::now());
+        assert!(seen.hp.is_some_and(|hp| hp > 90.0), "{seen:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

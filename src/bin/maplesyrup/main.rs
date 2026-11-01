@@ -3804,6 +3804,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
             }
             let actions = companion.observe(tick.at, tick.obs.clone());
+            if let Some(w) = out.mouth.ai.as_ref()
+                && let Ok(mut now) = w.now.lock()
+            {
+                *now = ai::brain::Facts::of(companion.last());
+            }
             stats.frame(tick.at, &tick.obs, &companion);
             if actions
                 .iter()
