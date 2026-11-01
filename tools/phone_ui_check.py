@@ -115,6 +115,8 @@ EYES = "The MapleStory window is open and in view.\nCharacter: level 152.\nHP 11
 # Whether the stand-in PC sees the game at all (/api/eyes's `seen`).
 EYES_SEEN = {"on": True}
 INSTRUCTIONS = "You are MapleSyrup. Your attitude: friendly."
+# How the stand-in PC has what the player says written down (/api/instructions).
+TRANSCRIPTION = {"model": "gpt-4o-mini-transcribe", "language": "he"}
 # Whether the stand-in PC can start a call (/api/live): off, a call that
 # fails to open.
 LIVE = {"opens": True}
@@ -184,7 +186,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, wav(8000, pcm(seconds, 8000)), "audio/wav")
         elif path == "/api/mouth": self._log(); self._send(200, b'{"step_ms": 40, "levels": []}', "application/json")
         elif path == "/api/eyes": self._log(); self._send(200, json.dumps({"snapshot": EYES, "image": None, "seen": EYES_SEEN["on"]}).encode(), "application/json")
-        elif path == "/api/instructions": self._log(); self._send(200, json.dumps({"instructions": INSTRUCTIONS, "tone": "friendly"}).encode(), "application/json")
+        elif path == "/api/instructions": self._log(); self._send(200, json.dumps({"instructions": INSTRUCTIONS, "tone": "friendly", "transcription": TRANSCRIPTION}).encode(), "application/json")
         elif path == "/api/share": self._log(); self._send(200, json.dumps(share_view()).encode(), "application/json")
         elif path == "/api/stats": self._log(); self._send(200, json.dumps({"sessions": SESSIONS, "share": {"on": SHARE["on"]}}).encode(), "application/json")
         else: self._log(); self._send(404, b"{}", "application/json")
@@ -1179,6 +1181,25 @@ def live_checks(browser):
     t_back = time.time()
     page.click("#gear"); page.check("#liveCall"); page.click("#sheetDone")
     wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t_back, "/api/mode")), 5, "the call did not reopen")
+    # On the call, a language asked for (of the call, which tells the PC, or
+    # out loud) is the picker's at once, and the call goes on in it: its
+    # instructions in that language, and what the player says written down
+    # in it — not a call started over.
+    updates = len(sent("session.update"))
+    t_lang = time.time()
+    STATUS["lang_request"] = {"lang": "he-IL", "seq": 4}
+    heard_in_it = {"type": "realtime", "audio": {"input": {"transcription": TRANSCRIPTION}}}
+    wait_for(lambda: heard_in_it in [e["session"] for e in sent("session.update")[updates:]], 5, "the call was not retuned to the language asked for")
+    retuned = [e["session"] for e in sent("session.update")[updates:]]
+    told = retuned.index(heard_in_it)
+    assert told >= 1 and retuned[told - 1] == {"type": "realtime", "instructions": INSTRUCTIONS}, retuned
+    assert page.input_value("#lang") == "he-IL", page.input_value("#lang")
+    assert any(r["query"].get("lang") == "he-IL" for r in requests_since(t_lang, "/api/instructions")), "the instructions were not asked for in the new language"
+    assert not requests_since(t_lang, "/api/live"), "the call was started over"
+    STATUS.pop("lang_request")
+    updates = len(sent("session.update"))
+    page.select_option("#lang", "en-US")
+    wait_for(lambda: heard_in_it in [e["session"] for e in sent("session.update")[updates:]], 5, "the call was not retuned to the language picked")
     # A glance at another app (the page hidden a moment) is not the end of
     # the call: no word to the PC (the line waiting for the call's gap went
     # nowhere, and a death meanwhile was shown and never said); a lock is

@@ -224,7 +224,9 @@ pub trait Service: Send + Sync {
         language: Option<&str>,
         mic: crate::ai::live::Mic,
     ) -> Result<Value, String>;
-    /// The call's instructions as they are now: `{instructions, tone}`.
+    /// The call's instructions as they are now: `{instructions, tone,
+    /// transcription}` (`transcription`: how what the player says is
+    /// written down, in `language`).
     /// The phone asks for them when the level it talks at changes during a
     /// call (the bar, the age answered, the player objecting to the tone)
     /// and hands them to the call, which goes on in the new tone without
@@ -1553,7 +1555,7 @@ mod tests {
             )
         }
         fn instructions(&self, language: Option<&str>) -> Value {
-            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "tone": "friendly"})
+            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "tone": "friendly", "transcription": {"language": language}})
         }
         fn tool(
             &self,
@@ -1666,6 +1668,7 @@ mod tests {
         let now: Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(now["instructions"], "Your attitude: friendly (he-IL)");
         assert_eq!(now["tone"], "friendly");
+        assert_eq!(now["transcription"]["language"], "he-IL");
         assert_eq!(
             hub.handle(&request("GET", "/api/instructions", "")).status,
             403

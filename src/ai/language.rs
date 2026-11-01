@@ -2,6 +2,13 @@
 //! `he-IL`): its name for the model, and whether MapleSyrup's own lines
 //! (warnings, greetings) must be translated before they are spoken.
 
+/// The languages the phone's picker offers, by its codes (the page's
+/// `LANGUAGES`): what MapleSyrup can be switched to when the player asks.
+pub const LOCALES: &[&str] = &[
+    "en-US", "en-GB", "he-IL", "es-ES", "es-MX", "pt-BR", "fr-FR", "de-DE", "ko-KR", "ja-JP",
+    "zh-CN", "zh-TW", "th-TH", "vi-VN", "id-ID", "ru-RU",
+];
+
 /// The language's name in English, for the model's instructions.
 pub fn name(locale: &str) -> &'static str {
     let lower = locale.trim().to_ascii_lowercase();
@@ -76,6 +83,22 @@ mod tests {
         assert!(is_english("en-GB"));
         assert!(is_english(""));
         assert!(!is_english("ko-KR"));
+    }
+
+    #[test]
+    fn the_languages_offered_are_the_phones_pickers() {
+        for locale in LOCALES {
+            assert!(
+                crate::phone::PAGE.contains(&format!("[\"{locale}\", ")),
+                "the phone's picker lacks {locale}"
+            );
+        }
+        let picker = crate::phone::PAGE
+            .split("const LANGUAGES = [")
+            .nth(1)
+            .and_then(|rest| rest.split("];").next())
+            .unwrap_or("");
+        assert_eq!(picker.matches("[\"").count(), LOCALES.len(), "{picker}");
     }
 
     #[test]

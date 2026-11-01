@@ -2304,6 +2304,9 @@
     renderVoices(status.voices, status.voice);
     postJson("/api/lang", { lang: locale }).catch(() => {});
     if (listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
+    // On a call (picked here, or asked of the call out loud): the call goes
+    // on in the new language, and writes down what it hears in it.
+    if (liveCall.on) retune(liveCall.tone, true);
   });
   // A language the player asked the PC for out loud ("talk to me in
   // Hebrew"; status.lang_request): taken once per request (its number),
@@ -3179,10 +3182,12 @@
   }
   setInterval(flushSay, 1000);
 
-  // The call's instructions again, at the level the PC reports now,
-  // handed to the call as it goes (session.update): the conversation is
-  // kept, and the next thing it says is in the new tone.
-  async function retune(tone) {
+  // The call's instructions again, at the level the PC reports now and in
+  // the phone's language, handed to the call as it goes (session.update):
+  // the conversation is kept, and the next thing it says is in the new tone
+  // (or `language`: the new language, and what it hears is written down in
+  // it — on its own, so a transcriber that won't take that leaves the rest).
+  async function retune(tone, language) {
     const was = liveCall.tone;
     liveCall.tone = tone;
     try {
@@ -3192,6 +3197,9 @@
       if (!j.instructions) throw new Error("no instructions");
       const session = liveCall.api === "beta" ? { instructions: j.instructions } : { type: "realtime", instructions: j.instructions };
       liveSend({ type: "session.update", session });
+      if (language && j.transcription && liveCall.api !== "beta") {
+        liveSend({ type: "session.update", session: { type: "realtime", audio: { input: { transcription: j.transcription } } } });
+      }
     } catch (e) {
       // (The next poll tries again.)
       if (liveCall.tone === tone) liveCall.tone = was;

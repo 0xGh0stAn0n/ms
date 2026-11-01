@@ -71,8 +71,9 @@ How it talks
   internet connection's address; 18 in most places, 19, 20 or 21 in some,
   and never under 18 - and until you say you are, it talks no wilder than
   Blunt, wherever the bar is. "Change my answer" under the bar asks again.
-  With Claude talking, you can also just ask it out loud to talk another
-  way: it moves the bar (the age question still holds it).
+  You can also just ask it out loud, on a call or with Claude talking, to
+  talk another way: it moves the bar, and you see it move (the age question
+  still holds it).
   The levels, the ages by country (with the law each comes from, checked in
   October 2026) and where it looks the country up are data
   (companion/spectrum.json, companion/age.json).
@@ -103,9 +104,11 @@ How it talks
 
   With an OpenAI key, talking to it is a live call, like ChatGPT's voice mode:
   its voice comes from the phone (or earbuds on the phone), and the phone
-  listens while it talks. Speak any language, switch or mix languages
-  mid-sentence (Hebrew and English, say) and it follows you, with no setting.
-  Talk over it and it stops and goes with what you said. It sees the game
+  listens while it talks. It understands any language and answers in the
+  one picked on the phone; ask it out loud for another ("talk to me in
+  English") and it switches, the phone's picker too. The phone page works
+  from a PC's browser as well: there it cleans noise for a microphone
+  across the desk. Talk over it and it stops and goes with what you said. It sees the game
   through MapleSyrup's vision engine (no pictures of your screen are sent).
   A question that needs working out (exact numbers, a plan, a route) it
   hands to its thinker - Claude while Claude is connected, else a stronger
@@ -241,8 +244,9 @@ Languages
   Spanish"...): it switches at once, the phone included; in Hebrew its own
   lines (warnings, deaths, level-ups) are its own Hebrew, not a
   translation.
-  MapleSyrup answers in the language you speak to it and says its own lines
-  (warnings, level ups) in yours too. The installer speaks yours when Inno
+  On a call MapleSyrup answers in the language picked on the phone, whatever
+  you speak to it (ask for another and the picker follows); it says its own
+  lines (warnings, level ups) in yours too. The installer speaks yours when Inno
   Setup has it.
 
 Recording the session

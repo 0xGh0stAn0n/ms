@@ -1367,6 +1367,19 @@ impl LiveService {
 
     /// The call's instructions as of now, and the level of the bar they
     /// talk at.
+    /// How a call listens: as it adapted to the player (how soon to answer,
+    /// their words), and the phone's microphone and language.
+    fn tuning(&self, language: Option<&str>, mic: ai::live::Mic) -> ai::live::Tuning {
+        let memory = self.learning.memory();
+        ai::live::Tuning {
+            eagerness: memory.adapt.eagerness.clone(),
+            words: memory.words_hint(),
+            speed: ai::live::SPEED,
+            mic,
+            language: language.and_then(ai::language::code),
+        }
+    }
+
     fn instructions_with(
         &self,
         recent: &[String],
@@ -1388,18 +1401,7 @@ impl phone::Service for LiveService {
         let (instructions, level) = self.instructions_with(recent, language);
         let mut tools = ai::live::tools(self.toolbox.definitions());
         tools.push(ai::live::think_tool());
-        // How it adapted to the player (how soon to answer, their words),
-        // and the phone's microphone and language.
-        let tuning = {
-            let memory = self.learning.memory();
-            ai::live::Tuning {
-                eagerness: memory.adapt.eagerness.clone(),
-                words: memory.words_hint(),
-                speed: ai::live::SPEED,
-                mic,
-                language: language.and_then(ai::language::code),
-            }
-        };
+        let tuning = self.tuning(language, mic);
         let mut call = self
             .live
             .session(&instructions, &tools, &tuning)
@@ -1412,7 +1414,10 @@ impl phone::Service for LiveService {
     fn instructions(&self, language: Option<&str>) -> serde_json::Value {
         // (No "conversation so far": the call has it.)
         let (instructions, level) = self.instructions_with(&[], language);
-        json!({"instructions": instructions, "tone": level.id})
+        let transcription = self
+            .tuning(language, ai::live::Mic::default())
+            .transcription(true);
+        json!({"instructions": instructions, "tone": level.id, "transcription": transcription})
     }
 
     fn tool(
@@ -5725,6 +5730,18 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 out.apply(actions, &mut companion, latest_image.clone());
                             }
                         }
+                        // Asked on the call to talk another way, or in
+                        // another language: the setting changes as if moved
+                        // on the phone, which shows it, and the call is
+                        // given its instructions again (the call says so
+                        // itself).
+                        ai::Effect::Tone(id) => {
+                            set_tone(&id, &learning, &mut companion, &mut out);
+                            memory_checked = None;
+                        }
+                        ai::Effect::Language(locale) => {
+                            out.ask_language(&locale, &mut player_language, &mut companion, false);
+                        }
                         ai::Effect::Rewrite(instruction) => {
                             out.session
                                 .line("workshop", &format!("asked on the call: {instruction}"));
@@ -6222,6 +6239,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         below,
                     );
                     out.show(Kind::Info, &line);
+                }
+                // Asked to talk another way, or in another language: the
+                // setting changes as if moved on the phone, and the phone
+                // shows it (the model says so in its reply).
+                Done::Tone { id } => {
+                    set_tone(&id, &learning, &mut companion, &mut out);
+                    memory_checked = None;
+                }
+                Done::Language { locale } => {
+                    out.ask_language(&locale, &mut player_language, &mut companion, false);
                 }
                 Done::Command { word }
                     if word == ai::tools::COACH_ON || word == ai::tools::COACH_OFF =>

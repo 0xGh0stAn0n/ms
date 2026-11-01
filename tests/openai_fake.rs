@@ -598,6 +598,8 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::Shown { text, .. }) => panic!("shown: {text}"),
             Ok(Done::Command { word }) => panic!("command: {word}"),
             Ok(Done::Warn { what, .. }) => panic!("warn: {what}"),
+            Ok(Done::Tone { id }) => panic!("tone: {id}"),
+            Ok(Done::Language { locale }) => panic!("language: {locale}"),
             Ok(Done::LookUp { question, .. }) => panic!("look-up: {question}"),
             Ok(Done::Coached { label, .. }) => panic!("coached: {label}"),
             Ok(Done::Rewrite { instruction }) => panic!("rewrite: {instruction}"),
@@ -1916,6 +1918,8 @@ fn describe(done: Result<Done, std::sync::mpsc::RecvTimeoutError>) -> String {
         Ok(Done::Shown { text, .. }) => format!("shown: {text}"),
         Ok(Done::Command { word }) => format!("command: {word}"),
         Ok(Done::Warn { what, .. }) => format!("warn: {what}"),
+        Ok(Done::Tone { id }) => format!("tone: {id}"),
+        Ok(Done::Language { locale }) => format!("language: {locale}"),
         Ok(Done::LookUp { question, .. }) => format!("look-up: {question}"),
         Ok(Done::Coached { label, text, .. }) => format!("coached: {label}: {text:?}"),
         Ok(Done::Rewrite { instruction }) => format!("rewrite: {instruction}"),
@@ -2157,7 +2161,10 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
     // What they say is written down in the phone's language; the noise is
     // cleaned for a microphone across the desk; it thinks a little first.
     assert_eq!(session["audio"]["input"]["transcription"]["language"], "he");
-    assert_eq!(session["audio"]["input"]["noise_reduction"]["type"], "far_field");
+    assert_eq!(
+        session["audio"]["input"]["noise_reduction"]["type"],
+        "far_field"
+    );
     assert_eq!(session["reasoning"]["effort"], "low");
     assert!(
         session["audio"]["input"]["transcription"]["prompt"]

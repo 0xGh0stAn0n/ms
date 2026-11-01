@@ -221,7 +221,15 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     screen). The page says where its microphone is (`mic`: a phone near, a
     PC's browser far; `live::Mic` picks the noise reduction), and what the
     player says is written down in the phone's language
-    (`Tuning::language`, `language::code`). A question that needs working out it
+    (`Tuning::language`, `language::code`). The call answers in the
+    phone's language whatever is spoken to it; asked for another language
+    or another way of talking, it calls `set_language` (one of
+    `language::LOCALES`) or `set_tone` (`Effect::Language`,
+    `Effect::Tone`): the PC sets it as if picked on the phone
+    (`ask_language`, `set_tone`), the phone's picker or bar follows, and
+    the page hands the call its instructions again — and, for a language,
+    the transcription in it (`retune(tone, language)`; `/api/instructions`
+    carries `transcription`). A question that needs working out it
     announces like a person and hands over through `THINK_TOOL`: the PC
     (`LiveService::think`) posts it to Claude's board as a `question`
     (`Board::ask`) while a Claude Code session listens and waits

@@ -70,11 +70,11 @@ them while they play, like a friend on voice chat.";
 /// What else a call needs to know, after the rules and the attitude.
 const LIVE_MORE: &str = "On the call:
 - Speak fast, like a gamer on comms: no pauses, no drawn-out words. Short turns; let them talk.
-- Speak the language the player speaks, every time. When they clearly say a sentence in another language, switch \
-with them at once; when they mix languages in one sentence (Hebrew and English, say), answer the same way. A \
-language you were told to use \"by default\" is for when their words have no language: it never overrides the one \
-they are speaking now. Noise, a word or two you aren't sure of, a video or your own voice coming back never change \
-the language. Say game words the way players say them.
+- Speak the language set on their phone (below), every time, whatever language they talk to you in: you \
+understand them in any. When they ask you to speak another language, in any words, call set_language and go on in \
+it at once; when they ask you to talk to them another way (gentler, ruder, swearing or not, no filter), call \
+set_tone. Either changes their phone's setting too, where they see it. Noise, a word or two you aren't sure of, a \
+video or your own voice coming back never change the language. Say game words the way players say them.
 - Never say again what you said in your last two turns unless they ask again. Never report their level, map or bars \
 unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask about \
 the game. If what you heard makes no sense, or was only noise, say in a few words, in the language you were \
@@ -151,14 +151,16 @@ pub fn instructions(
         "{LIVE_PERSONA}\n\n{}\n\n{LIVE_MORE}",
         super::style::rules(level)
     );
-    if let Some(name) = language
+    match language
         .filter(|l| !l.trim().is_empty())
         .map(super::language::name)
     {
-        text.push_str(&format!(
-            "\n\nThe player's phone is set to {name}: speak {name} until they clearly speak another language; \
-then follow them."
-        ));
+        Some(name) => text.push_str(&format!(
+            "\n\nThe language set on the player's phone: {name}. Speak {name}."
+        )),
+        None => text.push_str(
+            "\n\nNo language is set on the player's phone: speak the language they speak.",
+        ),
     }
     if !learned.trim().is_empty() {
         text.push_str(
@@ -265,7 +267,7 @@ impl Tuning {
 
     /// How what they say is written down; `language`: told the language
     /// to expect (a transcriber that won't take it is asked again without).
-    fn transcription(&self, language: bool) -> Value {
+    pub fn transcription(&self, language: bool) -> Value {
         let mut transcription = json!({"model": TRANSCRIBE_MODEL});
         if let Some(words) = self.words.as_deref().filter(|w| !w.trim().is_empty()) {
             let words: String = words.chars().take(800).collect();
@@ -561,8 +563,8 @@ mod tests {
         assert!(text.contains("never argue with it"));
         assert!(text.contains("their words come first"));
         assert!(!text.contains("say it right away"));
-        assert!(text.contains("switch with them"));
-        assert!(text.contains("set to Hebrew"));
+        assert!(text.contains("call set_language and go on in it at once"));
+        assert!(text.contains("The language set on the player's phone: Hebrew. Speak Hebrew."));
         assert!(text.contains("learned from playing together"));
         assert!(text.contains("Night Lord"));
         assert!(text.contains("MapleSyrup: Hey! Ready?"));
@@ -679,10 +681,22 @@ is fine, once"
     fn a_call_thinks_a_little_and_keeps_to_the_language_it_was_set_to() {
         // Low, not the least: the least understood far less of what it heard.
         assert_eq!(REASONING_EFFORT, "low");
-        let text = instructions("", &[], Some("he-IL"), Spectrum::get().of_voice(Default::default()));
-        assert!(text.contains("speak Hebrew until they clearly speak another language"));
+        let text = instructions(
+            "",
+            &[],
+            Some("he-IL"),
+            Spectrum::get().of_voice(Default::default()),
+        );
+        assert!(text.contains("Speak Hebrew."));
+        assert!(text.contains("whatever language they talk to you in"));
         assert!(text.contains("never change the language"));
         assert!(text.contains("never answer it with the game"));
+        // Asked for another language or another way of talking, it changes
+        // the phone's setting (where they see it), by a tool.
+        assert!(text.contains("call set_tone"));
+        assert!(text.contains("Either changes their phone's setting too"));
+        let unset = instructions("", &[], None, Spectrum::get().of_voice(Default::default()));
+        assert!(unset.contains("speak the language they speak"));
     }
 
     #[test]

@@ -60,6 +60,14 @@ pub enum Effect {
     },
     /// Change MapleSyrup's own program on this PC, as the player asked.
     Rewrite(String),
+    /// Move the bar of how it talks to the player to the level with this
+    /// id, as they asked (the phone's bar follows; the age question may
+    /// hold it).
+    Tone(String),
+    /// Speak this language with the player from now on (one of the phone's
+    /// [`super::language::LOCALES`]), as they asked: theirs, as if picked
+    /// on the phone.
+    Language(String),
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -206,6 +214,22 @@ character (always on screen), and never with an alert about something else (leve
                 "set_recording",
                 "Start (on: true) or stop (on: false) recording the session as a video on the player's PC: the whole screen, the game's sound, your voice and theirs. Only when the player asks.",
                 json!({"on": {"type": "boolean"}}),
+            ),
+            function(
+                "set_tone",
+                "Move the bar of how you talk to the player — the one on their phone, gentlest first — to another \
+level, when they ask you to talk to them another way, in any words and any language (to swear or not, to be gentler, \
+to roast them, no filter). A player not known to be of age where they are stays at the last level open to all (the \
+phone asks them).",
+                json!({"tone": {"type": "string", "enum": crate::companion::spectrum::Spectrum::get().ids(),
+                                "description": "The level, gentlest first."}}),
+            ),
+            function(
+                "set_language",
+                "Switch the language you speak with the player — theirs on the phone too — when they ask you to talk \
+in another language, in any words and any language.",
+                json!({"language": {"type": "string", "enum": super::language::LOCALES,
+                                    "description": "The language, as the phone names it."}}),
             ),
             function(
                 "look_closer",
@@ -502,6 +526,36 @@ and installs the next time MapleSyrup starts. Tell the player it takes a few min
                         if muted { "mute" } else { "unmute" }.into(),
                     )),
                 )
+            }
+            "set_tone" => {
+                let tone = text("tone");
+                if crate::companion::spectrum::Spectrum::get()
+                    .ids()
+                    .contains(&tone.as_str())
+                {
+                    (
+                        format!(
+                            "The bar is moving to {tone}: talk that way from your next words (unless the \
+phone holds a player not known to be of age at the last level open to all)."
+                        ),
+                        Some(Effect::Tone(tone)),
+                    )
+                } else {
+                    ("No such level.".into(), None)
+                }
+            }
+            "set_language" => {
+                let wanted = text("language");
+                match super::language::LOCALES.iter().find(|l| **l == wanted) {
+                    Some(locale) => {
+                        let name = super::language::name(locale);
+                        (
+                            format!("Switched to {name}: speak {name} from now on, starting now."),
+                            Some(Effect::Language(locale.to_string())),
+                        )
+                    }
+                    None => ("The phone has no such language.".into(), None),
+                }
             }
             "look_closer" => {
                 let Some(frame) = frame else {
@@ -957,6 +1011,38 @@ mod tests {
                     &call("note_correction", json!({"about": "", "right": "x"})),
                     None
                 )
+                .1,
+            None
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_way_it_talks_and_its_language_change_when_the_player_asks() {
+        let dir = std::env::temp_dir().join(format!("ms-tools-tone-{}", std::process::id()));
+        let tools = toolbox(&dir);
+        let names: Vec<String> = tools
+            .definitions()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect();
+        assert!(names.contains(&"set_tone".to_string()));
+        assert!(names.contains(&"set_language".to_string()));
+        let levels = crate::companion::spectrum::Spectrum::get().ids();
+        let wildest = levels.last().unwrap().to_string();
+        let (said, effect) = tools.run(&call("set_tone", json!({"tone": wildest})), None);
+        assert!(said.contains(&wildest), "{said}");
+        assert_eq!(effect, Some(Effect::Tone(wildest)));
+        assert_eq!(
+            tools.run(&call("set_tone", json!({"tone": "x"})), None).1,
+            None
+        );
+        let (said, effect) = tools.run(&call("set_language", json!({"language": "en-US"})), None);
+        assert!(said.contains("speak English"), "{said}");
+        assert_eq!(effect, Some(Effect::Language("en-US".into())));
+        assert_eq!(
+            tools
+                .run(&call("set_language", json!({"language": "xx-YY"})), None)
                 .1,
             None
         );

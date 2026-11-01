@@ -441,6 +441,11 @@ pub enum Done {
     /// The player asked to be warned at another HP or MP (`below`: the
     /// percent, 0 for never, None for the usual).
     Warn { what: String, below: Option<f32> },
+    /// The player asked it to talk another way: the bar moves to this
+    /// level.
+    Tone { id: String },
+    /// The player asked for another language: theirs from now on.
+    Language { locale: String },
     /// Look `question` up in the background: `said` was the quick answer,
     /// `asked` whether the player asked for the look-up.
     LookUp {
@@ -1206,6 +1211,7 @@ const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 - set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or to start again.
+- set_tone when they ask you to talk to them another way (gentler, ruder, swearing or not, no filter); set_language when they ask you to speak another language. Either changes their phone's setting too.
 A tool that changes a setting or what you keep acts only when the player's own sentence plainly asks for it — a \
 verb and what it is about (\"warn me when MP is under 30%\", \"stop talking\", \"remember that…\", \"no, I'm level \
 61\") — never on a few words that may be misheard or your own voice heard back (\"don't stop\", \"23% still \
@@ -1975,6 +1981,12 @@ fn converse<'a>(
                     }
                     Some(Effect::Warn { what, below }) => {
                         let _ = tx.send(Done::Warn { what, below });
+                    }
+                    Some(Effect::Tone(id)) => {
+                        let _ = tx.send(Done::Tone { id });
+                    }
+                    Some(Effect::Language(locale)) => {
+                        let _ = tx.send(Done::Language { locale });
                     }
                     Some(Effect::LookUp {
                         question,
