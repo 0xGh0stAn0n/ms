@@ -914,9 +914,12 @@ impl Sight {
             // The game's own number says how far the fill should reach: a
             // bar whose track end was guessed from its fill is refitted to
             // it, the way a reading by the teacher refits it. Only a new
-            // bar (under three readings): a well-fitted one that suddenly
-            // disagrees is more likely misread than wrong, and is not bent.
-            // A bar not fitted at all takes the number at once.
+            // bar (under three readings), and only to a number within
+            // FILL_AGREES of it: a well-fitted one that suddenly disagrees
+            // is more likely misread than wrong, and a number far from a
+            // new one may be the misread — bent to it, the bar scales every
+            // later fill (a track 1.3x too long reads 43% as 34%). A bar
+            // not fitted at all takes the number at once.
             let unfitted = bar.is_none()
                 && self
                     .layout
@@ -927,8 +930,10 @@ impl Sight {
                         Field::Exp => l.exp.as_ref(),
                     })
                     .is_some_and(|b| b.readings.is_empty());
+            let near = |p: f32| bar.is_some_and(|b| (p - b).abs() <= FILL_AGREES);
             if (streak > 0 || unfitted)
                 && let Some(p) = percent
+                && (unfitted || near(p))
                 && (unfitted
                     || self
                         .refit_at
@@ -1527,10 +1532,12 @@ disagrees with them is not believed).",
                     }
                     _ => true,
                 };
-                // A reading fixes a new bar's end; a well-learned bar that
-                // suddenly disagrees is more likely misread (or moved) than
-                // wrong, and is not bent to it.
-                if agrees || bar.readings.len() < 3 {
+                // A reading that agrees refines the bar's end; one that
+                // disagrees is not added, to a new bar either — a misread
+                // bent into its fit scales every later fill. Disagreeing
+                // twice, the HUD is looked for again (below), and the
+                // teacher's calibration fits it anew.
+                if agrees {
                     bar.reading(frame, percent);
                 }
             }
@@ -3101,5 +3108,41 @@ mod tests {
         assert!(sight.numbers.knows(Field::Mp));
         assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_bar_is_refitted_only_from_numbers_that_agree_with_it() {
+        let (mut sight, dir) = font_sight("refit");
+        let hp_bar = |sight: &Sight| sight.layout.as_ref().unwrap().hp.clone().unwrap();
+        let before = hp_bar(&sight);
+        assert_eq!(before.readings.len(), 1);
+        // The font reads 400/400 over a bar 10% full (a misread number, or
+        // a bar misread): the young bar is not bent to it.
+        let t0 = Instant::now();
+        sight.observe(&hp_line_over((400, 400), (40, 400)), t0);
+        assert_eq!(hp_bar(&sight), before);
+        // 400/400 over a bar 90% full: within FILL_AGREES, a reading.
+        sight.observe(
+            &hp_line_over((400, 400), (360, 400)),
+            t0 + Duration::from_secs(2),
+        );
+        assert_eq!(hp_bar(&sight).readings.len(), 2);
+        // The teacher's read far from a young bar does not bend it either.
+        let dir2 = temp_dir("refit-verified");
+        let mut sight = Sight::load(&dir2);
+        let frame = status_bar(60.0, 100.0);
+        sight.calibrated(&frame, &calibration()).unwrap();
+        let before = hp_bar(&sight);
+        let line = sight.verified(
+            &frame,
+            &HudValues {
+                hp: Some((1000, 5000)),
+                ..Default::default()
+            },
+        );
+        assert!(line.contains("bar said"), "{line}");
+        assert_eq!(hp_bar(&sight), before);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 }
