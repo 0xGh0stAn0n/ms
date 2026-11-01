@@ -455,10 +455,12 @@ try {
     $NoiseTurn = [ordered]@{
         noise_ms = $NoiseMs; noise_db = [math]::Round(20 * [math]::Log10($NoiseRms))
         heard_speech = @($events | Where-Object { $_.Type -eq "input_audio_buffer.speech_started" }).Count
-        answered = $answered; heard = (& $heardOf $events); said = (& $saidOf $events)
+        answered = $answered
+        spoke = @($events | Where-Object { $_.Type -in @("response.output_audio.delta", "response.audio.delta") }).Count -gt 0
+        heard = (& $heardOf $events); said = (& $saidOf $events)
     }
     foreach ($e in $events) { [void]$AllEvents.Add([pscustomobject]@{ turn = "noise"; at = [math]::Round($e.At - $noiseFrom); type = $e.Type }) }
-    Write-Host ("    heard speech {0} times, answered {1} times" -f $NoiseTurn.heard_speech, $NoiseTurn.answered)
+    Write-Host ("    heard speech {0} times, answered {1} times, spoke: {2}" -f $NoiseTurn.heard_speech, $NoiseTurn.answered, $NoiseTurn.spoke)
     Start-Sleep -Milliseconds $QuietBetweenMs
 
     # ---- talking over a long answer: how soon does it notice? --------------
@@ -511,7 +513,7 @@ try {
         ("first sound after the question ended: median {0} ms, min {1}, max {2} (n={3})" -f (& $median $sounds), ($sounds | Select-Object -First 1), ($sounds | Select-Object -Last 1), $sounds.Count),
         ("of which hearing the question stop: median {0} ms" -f (& $median $vads)),
         ("answers in the phone's language ({0}): {1} of {2}" -f $Lang, @($Turns | Where-Object { $_.in_language -eq $true }).Count, @($Turns | Where-Object { $null -ne $_.in_language }).Count),
-        ("a room with nobody talking ({0} dB, {1} s): heard speech {2} times, answered {3} times{4}" -f $NoiseTurn.noise_db, ($NoiseTurn.noise_ms / 1000), $NoiseTurn.heard_speech, $NoiseTurn.answered, $(if ($NoiseTurn.said) { ": " + $NoiseTurn.said } else { "" })),
+        ("a room with nobody talking ({0} dB, {1} s): heard speech {2} times, answered {3} times, spoke: {4}{5}" -f $NoiseTurn.noise_db, ($NoiseTurn.noise_ms / 1000), $NoiseTurn.heard_speech, $NoiseTurn.answered, $NoiseTurn.spoke, $(if ($NoiseTurn.said) { ": " + $NoiseTurn.said } else { "" })),
         ("talking over a long answer ({0}): noticed {1} ms after the player began; the new question answered {2} ms after it ended: {3}" -f $OverTurn.long_answer, $OverTurn.noticed_ms, $OverTurn.next_first_sound_ms, $OverTurn.said_after),
         ""
     )
