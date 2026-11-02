@@ -174,8 +174,8 @@ struct Awaiting {
     heard_at: Option<f64>,
 }
 
-/// Why nothing was said this frame, for the log.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why nothing was said this frame, for the log and the replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Hold {
     NotWatching,
     Settling,
@@ -185,6 +185,21 @@ pub enum Hold {
     Tempo,
     NothingReady,
     NotWanted,
+}
+
+impl Hold {
+    pub fn word(self) -> &'static str {
+        match self {
+            Hold::NotWatching => "not watching",
+            Hold::Settling => "settling in",
+            Hold::Talking => "someone talking",
+            Hold::TooSoon => "too soon after the last word",
+            Hold::TooMany => "enough for now",
+            Hold::Tempo => "tempo",
+            Hold::NothingReady => "nothing ready",
+            Hold::NotWanted => "not wanted enough",
+        }
+    }
 }
 
 #[derive(Debug)]

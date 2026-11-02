@@ -208,12 +208,27 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   sets the longest). `vocal.rs` hums `melodies.json` (every melody
   MapleSyrup's own and marked so: a hummed game theme is a performance of
   Nexon's composition) through the worker's mouth lane (`Job::Play`), at
-  the voice's 24 kHz. Everything is tested by replaying frames; the one
-  model call is `mind::think`, with `compose`/`parse` tested without a
-  model. The session log's `[intuition]` lines say what was thought, what
-  was said and why, what was dropped and why, and at the end how many
-  thoughts were answered, let pass or shushed — the measure to tune the
-  data by.
+  the voice's 24 kHz; a tune is a phrase of a few seconds (`LONGEST_S`),
+  since the player's window to answer opens when it ends. Everything is
+  tested by replaying frames; the one model call is `mind::think`, with
+  `compose`/`parse` tested without a model. What became of a thought is
+  settled honestly: handed to the voice (`Director::said`), heard
+  (`voiced`, when the worker is done with the line and its hum and what
+  was queued has played) or taken back whole when no sound was made
+  (`unsaid`); the main loop keeps the jobs that say a thought
+  (`Voicing`) and settles them from `Done::Audio`/`Voiced`/`Failed`. The
+  session log's `[intuition]` lines say what was thought, what was said
+  and why, what was dropped and why, and at the end how many thoughts were
+  answered, let pass or shushed — the measure to tune the data by
+  (`tools/intuition_table.py` reads them into tables, per hook, kind,
+  dial and tempo; the session's record carries the counts too). And
+  `trace.rs` writes the session's intuition as numbers — a `World` at
+  most once a second, the mind's thoughts, the player's words as events,
+  the voice done, the dial — to `intuition.jsonl` beside the log, so that
+  `intuition_replay` can run it again with today's `initiative.json`,
+  `tempo.json` and `hooks.json`, without the game, the model or the voice,
+  and show when it would speak now and why it held its tongue the rest of
+  the time: the data is tuned on replays, then played.
 - **`ai/`**: the model clients, the teaching loop, the tools, the coach's
   look (`coach()`). The worker is two lanes (`spawn_brains`):
   `Worker::send` routes `Job::Speak`, MapleSyrup's own lines, to the mouth

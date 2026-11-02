@@ -17,12 +17,14 @@
 
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
+
 use super::hooks::Kind;
 use super::tempo::Tempo;
 use super::world::World;
 
 /// What a thought stands on. While it holds, the thought may be said.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Basis {
     /// The map it is about (None: not about a place).
     pub map: Option<String>,
@@ -100,7 +102,7 @@ impl Basis {
 }
 
 /// One thought, ready to be said.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Thought {
     pub id: u64,
     /// The hook it came from.

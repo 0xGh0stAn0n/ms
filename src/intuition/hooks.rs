@@ -16,7 +16,7 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::tempo::Tempo;
@@ -68,7 +68,7 @@ impl Trigger {
 }
 
 /// What kind of thought a hook makes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// Something to do next, in first person plural.
@@ -77,7 +77,6 @@ pub enum Kind {
     Remark,
     /// What it thinks of something, from its taste card.
     Opinion,
-    /// Something the player said before, brought up now.
     /// Picks up what they once said they like (the mind knows it from the
     /// notebook; any hook's thought may be one).
     Callback,

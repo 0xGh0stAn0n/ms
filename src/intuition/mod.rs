@@ -36,6 +36,8 @@
 //!   keeps a standing plan for "what now?".
 //! - [`vocal`]: humming, from MapleSyrup's own melodies (data:
 //!   `melodies.json`).
+//! - [`trace`]: the session written down as numbers, and replayed with
+//!   today's data — how the director is tuned without a model or a game.
 //!
 //! Nothing said lives in this code: the hooks carry facts and tags, the
 //! mind puts them in words in the player's language, and the director
@@ -47,6 +49,7 @@ pub mod hooks;
 pub mod mind;
 pub mod tempo;
 pub mod thoughts;
+pub mod trace;
 pub mod vocal;
 pub mod world;
 
@@ -141,6 +144,8 @@ pub struct Intuition {
     /// The calm-stretch hooks whose odds were rolled in this calm (each
     /// gets one roll per calm, when its own wait is up).
     calm_rolled: HashSet<String>,
+    /// Why nothing was said in the last frame (None: something was).
+    hold: Option<Hold>,
 }
 
 impl Intuition {
@@ -160,6 +165,7 @@ impl Intuition {
             last_plan_at: f64::NEG_INFINITY,
             waiting: VecDeque::new(),
             calm_rolled: HashSet::new(),
+            hold: None,
         }
     }
 
@@ -243,15 +249,25 @@ impl Intuition {
             acts.push(Act::Think(cue));
         }
         // Whether a thought is said now.
-        if let Ok(thought) = self.director.consider(world, self.tempo, &mut self.pool) {
-            self.director.said(&thought, now);
-            let hum = thought.hum.clone();
-            acts.push(Act::Say(thought));
-            if let Some(melody) = hum {
-                acts.push(Act::Hum(melody));
+        match self.director.consider(world, self.tempo, &mut self.pool) {
+            Ok(thought) => {
+                self.hold = None;
+                self.director.said(&thought, now);
+                let hum = thought.hum.clone();
+                acts.push(Act::Say(thought));
+                if let Some(melody) = hum {
+                    acts.push(Act::Hum(melody));
+                }
             }
+            Err(hold) => self.hold = Some(hold),
         }
         acts
+    }
+
+    /// Why nothing was said in the last frame (None: something was, or no
+    /// frame yet).
+    pub fn hold(&self) -> Option<Hold> {
+        self.hold
     }
 
     /// The hooks `trigger` fires now, each kept with its odds, go to the

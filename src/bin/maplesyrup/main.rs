@@ -2231,6 +2231,17 @@ fn set_coaching(
     );
 }
 
+/// The thoughts' counts, for the session's record.
+fn thoughts_record(intuition: &ms::intuition::Intuition) -> ms::metrics::Thoughts {
+    let s = intuition.director.stats;
+    ms::metrics::Thoughts {
+        spoken: s.spoken,
+        engaged: s.engaged,
+        ignored: s.ignored,
+        rejected: s.rejected,
+    }
+}
+
 /// A thought of its own handed to the voice: the worker jobs that say it
 /// (the line, then the hum when there is one), and whether any of them
 /// made a sound yet.
@@ -2248,16 +2259,17 @@ fn set_intuition(
     coach: &mut ms::coach::Coach,
     has_mind: bool,
     out: &mut Outputs,
+    trace: &mut ms::intuition::trace::Tracer,
     on: bool,
     now: f64,
 ) {
     let on = on && has_mind;
-    if !on
-        && intuition.on
-        && let Some(outcome) = intuition.told_to_stop(now)
-    {
-        out.session
-            .line("intuition", &format!("thought {outcome:?}").to_lowercase());
+    if !on && intuition.on {
+        trace.event(now, ms::intuition::trace::Event::Stop);
+        if let Some(outcome) = intuition.told_to_stop(now) {
+            out.session
+                .line("intuition", &format!("thought {outcome:?}").to_lowercase());
+        }
     }
     intuition.set_on(on);
     coach.set_looks(!on);
@@ -2278,6 +2290,8 @@ fn set_initiative(
     learning: &ai::Learning,
     intuition: &mut ms::intuition::Intuition,
     out: &mut Outputs,
+    trace: &mut ms::intuition::trace::Tracer,
+    now: f64,
 ) {
     if !intuition.director.set_level(id) {
         out.session
@@ -2285,6 +2299,7 @@ fn set_initiative(
         return;
     }
     let level = intuition.director.level().id.clone();
+    trace.event(now, ms::intuition::trace::Event::Dial(level.clone()));
     {
         let mut memory = learning.memory();
         memory.initiative = Some(level.clone());
@@ -4793,6 +4808,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         ai::brain::session_seed(),
     );
     coach.set_looks(!intuition.on);
+    out.session.line(
+        "intuition",
+        &format!(
+            "thoughts of its own: {}; initiative: {}",
+            if intuition.on { "on" } else { "off" },
+            intuition.director.level().id
+        ),
+    );
     // The standing plan the mind keeps, and the player's last few sentences
     // (for the mind to think in the same conversation).
     let mut plan: Option<ms::intuition::mind::Plan> = None;
@@ -4802,6 +4825,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // player's window to answer opens when the voice is done with all of
     // it; a thought talked over before a sound was made is taken back.
     let mut voicing: Option<Voicing> = None;
+    // The session's intuition as numbers (`intuition.jsonl` beside the
+    // log), for `intuition_replay`: the data is tuned on replays, not on
+    // play. Written only while the intuition is on.
+    let mut trace = if intuition.on {
+        ms::intuition::trace::Tracer::open(&out.session.dir)
+    } else {
+        ms::intuition::trace::Tracer::off()
+    };
     // When anyone last said anything (the player, a reply, an alert), for
     // the intuition's gaps.
     let mut anyone_spoke_at = f64::NEG_INFINITY;
@@ -5048,7 +5079,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     out.session
                         .line("intuition", "not said: talked over before a sound was made");
                     intuition.unsaid();
+                    trace.event(now, ms::intuition::trace::Event::Unsaid);
                     voicing = None;
+                }
+                if intuition.on {
+                    if !trace.is_on() {
+                        trace = ms::intuition::trace::Tracer::open(&out.session.dir);
+                    }
+                    trace.world(&world);
                 }
                 for act in intuition.observe(&world) {
                     match act {
@@ -5062,6 +5100,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                         cue.hooks.join(", "),
                                         if cue.plan { ", and the plan" } else { "" }
                                     ),
+                                );
+                                trace.event(
+                                    now,
+                                    ms::intuition::trace::Event::Think {
+                                        trigger: cue.trigger.word().to_string(),
+                                        hooks: cue.hooks.clone(),
+                                    },
                                 );
                                 mind.think(
                                     cue,
@@ -5092,12 +5137,19 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             );
                             coach.someone_spoke(now);
                             anyone_spoke_at = now;
+                            trace.event(
+                                now,
+                                ms::intuition::trace::Event::Said {
+                                    hook: thought.hook.clone(),
+                                },
+                            );
                             if out.live {
                                 // The call says it, as a thought of its own
                                 // (when it is done saying it is the call's
                                 // to know: the window opens now).
                                 for_the_call.push(thought.text);
                                 intuition.voiced(now);
+                                trace.event(now, ms::intuition::trace::Event::Voiced { at: now });
                             } else {
                                 let id = worker.send(Job::Say {
                                     heard: None,
@@ -5148,6 +5200,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                             thought.rating,
                                             thought.text
                                         ),
+                                    );
+                                    trace.event(
+                                        now,
+                                        ms::intuition::trace::Event::Thought(thought.clone()),
                                     );
                                     intuition.thought(thought);
                                 }
@@ -5437,6 +5493,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         // since it was let pass; and the mind thinks in the
                         // same conversation.
                         anyone_spoke_at = now;
+                        trace.event(now, ms::intuition::trace::Event::PlayerSpoke);
                         if let Some(outcome) = intuition.player_spoke(now) {
                             out.session
                                 .line("intuition", &format!("thought {outcome:?}").to_lowercase());
@@ -5555,6 +5612,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 &mut coach,
                                 mind.is_some(),
                                 &mut out,
+                                &mut trace,
                                 on,
                                 now,
                             );
@@ -5769,6 +5827,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         // phone shows it itself).
                         anyone_spoke_at = now;
                         if who == "player" {
+                            trace.event(now, ms::intuition::trace::Event::PlayerSpoke);
                             if let Some(outcome) = intuition.player_spoke(now) {
                                 out.session.line(
                                     "intuition",
@@ -5811,6 +5870,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                     &mut coach,
                                     mind.is_some(),
                                     &mut out,
+                                    &mut trace,
                                     on,
                                     now,
                                 );
@@ -5936,7 +5996,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         memory_checked = None;
                     }
                     Inbound::Initiative(id) => {
-                        set_initiative(&id, &learning, &mut intuition, &mut out);
+                        set_initiative(&id, &learning, &mut intuition, &mut out, &mut trace, now);
                     }
                     Inbound::Record(true) => recording.start(&mut out),
                     Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),
@@ -5975,6 +6035,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 &mut coach,
                                 mind.is_some(),
                                 &mut out,
+                                &mut trace,
                                 on,
                                 now,
                             );
@@ -6004,7 +6065,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             memory_checked = None;
                         }
                         ai::Effect::Initiative(id) => {
-                            set_initiative(&id, &learning, &mut intuition, &mut out);
+                            set_initiative(
+                                &id,
+                                &learning,
+                                &mut intuition,
+                                &mut out,
+                                &mut trace,
+                                now,
+                            );
                         }
                         ai::Effect::Language(locale) => {
                             out.ask_language(&locale, &mut player_language, &mut companion, false);
@@ -6203,6 +6271,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 &mut coach,
                                 mind.is_some(),
                                 &mut out,
+                                &mut trace,
                                 on,
                                 now,
                             );
@@ -6526,7 +6595,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 // Asked to speak up more or less on its own: the dial moves,
                 // and stays there.
                 Done::Initiative { id } => {
-                    set_initiative(&id, &learning, &mut intuition, &mut out);
+                    set_initiative(&id, &learning, &mut intuition, &mut out, &mut trace, now);
                 }
                 Done::Language { locale } => {
                     out.ask_language(&locale, &mut player_language, &mut companion, false);
@@ -6541,6 +6610,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         &mut coach,
                         mind.is_some(),
                         &mut out,
+                        &mut trace,
                         on,
                         now,
                     );
@@ -6672,6 +6742,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             if v.started {
                                 let done_at = now + out.mouth.player.remaining().as_secs_f64();
                                 intuition.voiced(done_at);
+                                trace.event(
+                                    now,
+                                    ms::intuition::trace::Event::Voiced { at: done_at },
+                                );
                                 out.session.line(
                                     "intuition",
                                     &format!(
@@ -6682,6 +6756,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             } else {
                                 out.session.line("intuition", "not said: no sound was made");
                                 intuition.unsaid();
+                                trace.event(now, ms::intuition::trace::Event::Unsaid);
                             }
                             voicing = None;
                         }
@@ -6703,9 +6778,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         if v.jobs.is_empty() {
                             if v.started {
                                 intuition.voiced(now);
+                                trace.event(now, ms::intuition::trace::Event::Voiced { at: now });
                             } else {
                                 out.session.line("intuition", "not said: the voice failed");
                                 intuition.unsaid();
+                                trace.event(now, ms::intuition::trace::Event::Unsaid);
                             }
                             voicing = None;
                         }
@@ -6906,6 +6983,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             // are now; written every minute.
             stats.phone(now, summary.as_ref().is_some_and(|s| s.connected), out.live);
             stats.look(sight.as_ref(), frame_size);
+            stats.thoughts(
+                thoughts_record(&intuition),
+                intuition.on.then(|| intuition.director.level().id.as_str()),
+            );
             stats.save_every(&coach, player_language.as_deref());
             // A call whose phone has gone (pocketed, asleep) is lost.
             if let Some(summary) = &summary {
@@ -7173,6 +7254,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         print!("\x1b[?7h");
     }
     recording.finish();
+    stats.thoughts(
+        thoughts_record(&intuition),
+        intuition.on.then(|| intuition.director.level().id.as_str()),
+    );
     stats.finish(&coach, player_language.as_deref());
     // What the thoughts of its own came to, for the log (the measure the
     // research asks for: how many were answered, let pass, or shushed).

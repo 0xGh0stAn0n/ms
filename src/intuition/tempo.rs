@@ -17,14 +17,14 @@
 
 use std::sync::OnceLock;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::world::World;
 
 const DATA: &str = include_str!("tempo.json");
 
 /// How tense the game is, calm to peak. Ordered: `Tempo::Calm < Tempo::Peak`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Tempo {
     /// Nobody is playing: the game idles, or is out of sight.

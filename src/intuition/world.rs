@@ -13,17 +13,21 @@
 //! one dropped into the middle of it), and the moments a thought is
 //! welcome.
 
+use serde::{Deserialize, Serialize};
+
 /// Where the character is, as last read off the minimap (the sight reads
 /// it now and then, not every frame), and how old that reading is.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Place {
     pub name: String,
     /// Seconds since the name was read.
     pub age_s: f64,
 }
 
-/// The moment, as the intuition sees it.
-#[derive(Debug, Clone, PartialEq)]
+/// The moment, as the intuition sees it. Written to the session's trace
+/// as JSON ([`super::trace`]), so a session can be replayed from numbers.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct World {
     pub now: f64,
     /// The game is captured and in view.
@@ -43,7 +47,10 @@ pub struct World {
     pub talking: bool,
     /// Seconds since the player last said anything (`None`: not yet).
     pub since_player_spoke: Option<f64>,
-    /// Seconds since anyone said anything (the player, a reply, an alert).
+    /// Seconds since anyone said anything (the player, a reply, an alert);
+    /// infinite when nobody has yet (written as null: JSON has no
+    /// infinity).
+    #[serde(with = "endless")]
     pub since_anyone_spoke: f64,
     /// The companion holds its alerts (nothing the player does answers
     /// them: away, or the readings are wrong), or is muted.
@@ -74,6 +81,23 @@ impl Default for World {
             session_s: 0.0,
             classic: false,
         }
+    }
+}
+
+/// A number that may be infinite, as JSON: null for infinity.
+mod endless {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &f64, s: S) -> Result<S::Ok, S::Error> {
+        if value.is_finite() {
+            s.serialize_some(value)
+        } else {
+            s.serialize_none()
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::INFINITY))
     }
 }
 

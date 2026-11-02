@@ -101,8 +101,13 @@ The target the research gives: about half of the thoughts said get a
 word back and no more than one in eight is a disruption (Codellaborator,
 CHI 2025, the best measured profile). The session log's closing
 `[intuition]` line counts answered, let pass and shushed; tune the data
-until the ratio holds. Those counts are only worth tuning by if they are
-honest, so: the player's window to answer opens when the voice is done
+until the ratio holds — on replays first: every session writes
+`intuition.jsonl` (`trace.rs`), and `intuition_replay <session folder>
+[--level quiet]` runs it again with the data as built, printing what the
+session said beside what it would say now, and why nothing was said the
+rest of the time; `tools/intuition_table.py <sessions>` reads the log's
+`[intuition]` lines into the per-hook, per-kind, per-dial tables. Those
+counts are only worth tuning by if they are honest, so: the player's window to answer opens when the voice is done
 with the line and its hum (`Done::Voiced`, plus what is still queued to
 play), not when the director decided; a thought talked over before a
 sound was made is taken back whole (its once-per-session hook stays open,
@@ -128,8 +133,11 @@ thought even though its words were heard first.
   the phone page's to add); when the call is done saying one is the call's
   to know, so on a call the answer window opens at the hand-over; the hum
   waits for the PC's voice.
-- **Metrics**: the counts are in the log; the session record
-  (`metrics.rs`) does not carry them yet.
+- **A phone card for the counts**: the session record carries them
+  (`thoughts`, `initiative` in `metrics/sessions.jsonl`), the log has
+  them, `tools/intuition_table.py` tables them and `intuition_replay`
+  replays a session's `intuition.jsonl` with today's data; the phone's
+  stats page does not show them yet.
 - **A callback trigger**: the mind sees the player's tastes and moments
   from the notebook with every cue, so a callback can ride any hook; a
   trigger of its own (the player's words naming a place or a tune they
