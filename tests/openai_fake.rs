@@ -2218,7 +2218,8 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
         "Easy Zakum needs level 50.",
         ms::ai::knowledge::Source::Player,
     );
-    // The bar set to savage on the phone.
+    // The bar set to savage on the page (a locked level: opened with the
+    // player's password).
     {
         let mut memory = learning.memory();
         memory.tone = Some(
@@ -2227,7 +2228,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
                 .id
                 .clone(),
         );
-        memory.retune();
+        memory.unlock("wild horses");
     }
     let mut brain = Brain::new();
     brain.learning = Some(learning.clone());

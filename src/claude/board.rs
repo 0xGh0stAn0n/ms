@@ -622,12 +622,13 @@ or say nothing",
             ("POST", "/local/tone") => {
                 let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
                 let spectrum = crate::companion::spectrum::Spectrum::get();
-                match body["tone"]
-                    .as_str()
-                    .and_then(|id| spectrum.index(id))
-                    .map(|at| spectrum.level(at).id.clone())
-                {
-                    Some(id) => {
+                let open = self.learning().is_some_and(|l| l.memory().unlocked);
+                match body["tone"].as_str().and_then(|id| spectrum.index(id)) {
+                    Some(at) if spectrum.level(at).locked && !open => {
+                        Response::json(403, &json!({"error": crate::ai::tools::LOCKED_LEVEL}))
+                    }
+                    Some(at) => {
+                        let id = spectrum.level(at).id.clone();
                         self.lock().tone = Some(id.clone());
                         Response::json(200, &json!({"ok": true, "tone": id}))
                     }
@@ -1461,11 +1462,25 @@ mod tests {
                 &[],
             ))
         };
-        let moved = tone(" Unhinged ");
+        let moved = tone(" Blunt ");
         assert_eq!(moved.status, 200);
-        assert_eq!(json_of(&moved)["tone"], "unhinged");
-        assert_eq!(board.take_tone().as_deref(), Some("unhinged"));
+        assert_eq!(json_of(&moved)["tone"], "blunt");
+        assert_eq!(board.take_tone().as_deref(), Some("blunt"));
         assert_eq!(board.take_tone(), None);
+        // Past the open levels, only once his password opened them.
+        let shut = tone("unhinged");
+        assert_eq!(shut.status, 403);
+        assert_eq!(json_of(&shut)["error"], crate::ai::tools::LOCKED_LEVEL);
+        assert_eq!(board.take_tone(), None);
+        let dir = std::env::temp_dir().join(format!("ms-board-lock-{}", std::process::id()));
+        let learning = crate::ai::Learning::load(&dir);
+        board.set_learning(learning.clone());
+        assert_eq!(tone("unhinged").status, 403);
+        learning.memory().unlock("wild horses");
+        let opened = tone(" Unhinged ");
+        assert_eq!(opened.status, 200);
+        assert_eq!(board.take_tone().as_deref(), Some("unhinged"));
+        let _ = std::fs::remove_dir_all(dir);
         // A level it doesn't have: refused, with the ones it has.
         let refused = tone("wild");
         assert_eq!(refused.status, 400);

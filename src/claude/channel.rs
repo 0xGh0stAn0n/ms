@@ -957,7 +957,8 @@ fn tools(channel: bool) -> Value {
             "title": "How it talks to him",
             "description": "Move the bar of how you and MapleSyrup talk to him — the one on his phone, gentlest \
         first — to another level, when he asks you to talk to him another way, in any words (gentler, ruder, to \
-        roast him, no filter; no level swears); a `tone` event then brings the rules of the level you talk at.",
+        roast him, no filter). The open levels never swear; the ones past them open only with his password, on the \
+        page: a locked one is refused, and you tell him so. A `tone` event then brings the rules of the level you talk at.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"tone": {

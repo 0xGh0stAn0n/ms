@@ -18,10 +18,12 @@ use serde_json::json;
 use super::openai::{AiError, Ask, OpenAi};
 
 /// How long the call waits for Claude's answer before MapleSyrup's own
-/// model thinks it through instead (Claude's brief says so).
-pub const CLAUDE_WAIT: Duration = Duration::from_secs(20);
-/// How hard MapleSyrup's own model thinks.
-pub const EFFORT: &str = "medium";
+/// model thinks it through instead (Claude's brief says so): a player on a
+/// call waits for it (at 20 s, a question took half a minute).
+pub const CLAUDE_WAIT: Duration = Duration::from_secs(8);
+/// How hard MapleSyrup's own model thinks: low (at medium a question of
+/// where to train took 7 to 22 s on the bench, 1 Nov 2026).
+pub const EFFORT: &str = "low";
 /// The most its answer may take, its thinking included.
 const MAX_OUTPUT_TOKENS: u32 = 4000;
 /// How long it may take.

@@ -2,8 +2,9 @@
 //! at one end to the wildest at the other. The levels are data
 //! (`spectrum.json`), not code: each names the voice its own lines are
 //! dealt in (one of the three decks of [`Attitude`]) and what the models
-//! are told. No level swears — the wild end roasts in clean words — so the
-//! whole bar is open to everyone.
+//! are told. The open levels never swear (the highest, direct with a
+//! little sting); the levels past them open only with the password the
+//! player chooses on the page, and the wildest swears.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -23,6 +24,10 @@ pub struct Level {
     pub id: String,
     /// The voice its own lines (warnings, deaths, level-ups) are dealt in.
     pub voice: Attitude,
+    /// Whether it opens only with the player's password (the levels past
+    /// the highest open one: the wildest swears).
+    #[serde(default)]
+    pub locked: bool,
     /// How it talks at this level, for the models.
     pub instructions: String,
     /// What it says when the bar lands on this level, in this level's own
@@ -113,9 +118,35 @@ impl Spectrum {
         self.levels.iter().map(|l| l.id.as_str()).collect()
     }
 
-    /// The bar as the phone draws it: each level's name.
-    pub fn for_phone(&self) -> Value {
-        Value::Array(self.levels.iter().map(|l| json!({"id": l.id})).collect())
+    /// Whether some levels open only with the player's password.
+    pub fn has_locked(&self) -> bool {
+        self.levels.iter().any(|l| l.locked)
+    }
+
+    /// Where it talks when the bar is set at `index`: there, or, while the
+    /// locked levels are shut, at the nearest open level below it (the
+    /// first level when none is).
+    pub fn open_at(&self, index: usize, unlocked: bool) -> usize {
+        let index = index.min(self.levels.len() - 1);
+        if unlocked {
+            return index;
+        }
+        (0..=index)
+            .rev()
+            .find(|&at| !self.levels[at].locked)
+            .unwrap_or(0)
+    }
+
+    /// The bar as the page draws it: each level's name, the locked ones
+    /// only while they are open.
+    pub fn for_phone(&self, unlocked: bool) -> Value {
+        Value::Array(
+            self.levels
+                .iter()
+                .filter(|l| unlocked || !l.locked)
+                .map(|l| json!({"id": l.id}))
+                .collect(),
+        )
     }
 }
 
@@ -124,7 +155,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_bar_starts_where_it_says_and_no_level_swears() {
+    fn the_bar_starts_where_it_says_and_no_open_level_swears() {
         let bar = Spectrum::get();
         assert!(bar.levels().len() >= 3, "{:?}", bar.ids());
         // Names are distinct, and the default is one of them.
@@ -133,8 +164,9 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), bar.levels().len(), "{:?}", bar.ids());
         assert!(bar.index(&bar.default).is_some(), "{}", bar.default);
-        // Every level tells the models how to talk, and that it never
-        // swears: the bar is open to everyone, children included.
+        // Every level tells the models how to talk; every open one, that
+        // it never swears: those are everyone's, children included. The
+        // locked ones are past all the open ones.
         for level in bar.levels() {
             assert!(
                 level.instructions.split_whitespace().count() > 10,
@@ -142,13 +174,17 @@ mod tests {
                 level.id
             );
             assert!(
-                level.instructions.contains("no swearing")
+                level.locked
+                    || level.instructions.contains("no swearing")
                     || level.instructions.contains("No swearing"),
                 "{} may swear: {}",
                 level.id,
                 level.instructions
             );
         }
+        let first_locked = bar.levels().iter().position(|l| l.locked).unwrap();
+        assert!(bar.levels()[first_locked..].iter().all(|l| l.locked));
+        assert!(first_locked >= 3, "{:?}", bar.ids());
     }
 
     #[test]
@@ -160,8 +196,8 @@ mod tests {
             assert_eq!(level.id, voice.word());
         }
         // The gentlest end is for young children: nothing rude at all, not
-        // even mild; the wildest roasts harder than the savage voice, in
-        // clean words, and keeps its limits.
+        // even mild; the highest open level is direct with a little sting;
+        // the wildest, behind the password, swears, and keeps its limits.
         let gentlest = &bar.levels()[0];
         let wildest = bar.levels().last().unwrap();
         assert!(
@@ -174,12 +210,21 @@ mod tests {
                 .instructions
                 .contains("no swearing or rude words of any kind")
         );
+        let highest_open = bar.levels().iter().rev().find(|l| !l.locked).unwrap();
+        assert!(
+            highest_open
+                .instructions
+                .contains("Direct, with a little sting"),
+            "{}",
+            highest_open.instructions
+        );
+        assert!(wildest.locked);
         assert!(
             wildest
                 .instructions
-                .contains("over-the-top, theatrical roasting")
+                .contains("behind the player's own password")
         );
-        assert!(wildest.instructions.contains("Clean words only"));
+        assert!(wildest.instructions.contains("curse in every sentence"));
         for limit in [
             "no slurs",
             "never tell them to hurt themselves",
@@ -201,10 +246,30 @@ mod tests {
             bar.index(&savage.id)
         );
         assert_eq!(bar.index("loud"), None);
-        // The phone gets the names, gentlest first.
-        let phone = bar.for_phone();
-        assert_eq!(phone.as_array().unwrap().len(), bar.levels().len());
-        assert_eq!(phone[0]["id"], bar.levels()[0].id.as_str());
+        // The page gets the names, gentlest first: the locked ones only
+        // while they are open.
+        let open = bar.for_phone(false);
+        let all = bar.for_phone(true);
+        assert_eq!(all.as_array().unwrap().len(), bar.levels().len());
+        assert_eq!(
+            open.as_array().unwrap().len(),
+            bar.levels().iter().filter(|l| !l.locked).count()
+        );
+        assert_eq!(open[0]["id"], bar.levels()[0].id.as_str());
+    }
+
+    #[test]
+    fn a_bar_set_on_a_locked_level_talks_at_the_highest_open_one_until_unlocked() {
+        let bar = Spectrum::get();
+        let wildest = bar.levels().len() - 1;
+        let highest_open = bar.levels().iter().rposition(|l| !l.locked).unwrap();
+        assert!(bar.has_locked());
+        assert_eq!(bar.open_at(wildest, false), highest_open);
+        assert_eq!(bar.open_at(wildest, true), wildest);
+        assert_eq!(bar.open_at(wildest + 9, false), highest_open);
+        for at in 0..=highest_open {
+            assert_eq!(bar.open_at(at, false), at);
+        }
     }
 
     #[test]
@@ -247,6 +312,7 @@ mod tests {
         let none = Level {
             id: "x".into(),
             voice: Attitude::Blunt,
+            locked: false,
             instructions: String::new(),
             said_when_set: BTreeMap::new(),
         };

@@ -128,8 +128,9 @@ pub fn rule_path(path: &Path) -> String {
 /// with it); MapleSyrup (one folder up) started for Claude only — it makes
 /// do with one already running with a window, and takes over from one the
 /// Claude app runs in the background — with what the launcher itself was
-/// given (`--tunnel`: the phone over the internet, as the installer's
-/// shortcut starts it) — then Claude Code with the channel:
+/// given (an older installer's shortcut still says `--tunnel`, which does
+/// nothing now: the page opens in this PC's browser) — then Claude Code
+/// with the channel:
 /// Sonnet at low effort, quick enough to talk with (`/model` and `/effort`
 /// change it); auto mode, where Claude's own check of each action stands in
 /// for the prompts nobody would answer while he plays; and Remote Control
@@ -171,7 +172,7 @@ pub fn launcher() -> String {
         "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\" --claude-only %*",
         "echo.",
         "echo Claude is starting in this window. Answer its questions here: to \"development channel\" choose",
-        "echo \"I am using this for local development\"; to auto mode, yes. Then talk to it from the phone.",
+        "echo \"I am using this for local development\"; to auto mode, yes. Then talk to it on the page MapleSyrup opens in your browser.",
         "echo The first time, Claude Code also asks you to log in to your Claude account: a browser opens.",
         "echo.",
         "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --permission-mode auto --remote-control MapleSyrup",

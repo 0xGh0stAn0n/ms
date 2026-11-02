@@ -91,6 +91,10 @@ pub const RECORD_OFF: &str = "stop recording";
 /// …and to speak up on its own, or only when asked.
 pub const COACH_ON: &str = "coach";
 pub const COACH_OFF: &str = "stop coaching";
+/// What a model asking for a level behind the password is told (the call
+/// and Claude alike).
+pub const LOCKED_LEVEL: &str = "That level is locked: it opens only with the player's password, on the page. The bar \
+stays where it is; tell them so in a few words.";
 
 fn function(name: &str, description: &str, properties: Value) -> Value {
     let required: Vec<String> = properties
@@ -216,9 +220,10 @@ character (always on screen), and never with an alert about something else (leve
             ),
             function(
                 "set_tone",
-                "Move the bar of how you talk to the player — the one on their phone, gentlest first — to another \
+                "Move the bar of how you talk to the player — the one on their page, gentlest first — to another \
 level, when they ask you to talk to them another way, in any words and any language (to swear or not, to be gentler, \
-to roast them, no filter). No level swears.",
+to roast them, no filter). The open levels never swear; the ones past them open only with the player's password on \
+the page.",
                 json!({"tone": {"type": "string", "enum": crate::companion::spectrum::Spectrum::get().ids(),
                                 "description": "The level, gentlest first."}}),
             ),
@@ -527,16 +532,23 @@ and installs the next time MapleSyrup starts. Tell the player it takes a few min
             }
             "set_tone" => {
                 let tone = text("tone");
-                if crate::companion::spectrum::Spectrum::get()
-                    .ids()
-                    .contains(&tone.as_str())
-                {
-                    (
-                        format!("The bar is moving to {tone}: talk that way from your next words."),
-                        Some(Effect::Tone(tone)),
-                    )
-                } else {
-                    ("No such level.".into(), None)
+                let spectrum = crate::companion::spectrum::Spectrum::get();
+                let shut = |at: usize| {
+                    spectrum.level(at).locked
+                        && !self.learning.as_ref().is_some_and(|l| l.memory().unlocked)
+                };
+                match spectrum.index(&tone) {
+                    Some(at) if shut(at) => (LOCKED_LEVEL.into(), None),
+                    Some(at) => {
+                        let tone = spectrum.level(at).id.clone();
+                        (
+                            format!(
+                                "The bar is moving to {tone}: talk that way from your next words."
+                            ),
+                            Some(Effect::Tone(tone)),
+                        )
+                    }
+                    None => ("No such level.".into(), None),
                 }
             }
             "set_language" => {
@@ -1023,8 +1035,30 @@ mod tests {
             .collect();
         assert!(names.contains(&"set_tone".to_string()));
         assert!(names.contains(&"set_language".to_string()));
-        let levels = crate::companion::spectrum::Spectrum::get().ids();
+        let spectrum = crate::companion::spectrum::Spectrum::get();
+        let levels = spectrum.ids();
+        let highest_open = spectrum
+            .levels()
+            .iter()
+            .rev()
+            .find(|l| !l.locked)
+            .unwrap()
+            .id
+            .clone();
+        let (said, effect) = tools.run(&call("set_tone", json!({"tone": highest_open})), None);
+        assert!(said.contains(&highest_open), "{said}");
+        assert_eq!(effect, Some(Effect::Tone(highest_open)));
+        // Past the open levels, only with the player's password.
         let wildest = levels.last().unwrap().to_string();
+        let (said, effect) = tools.run(&call("set_tone", json!({"tone": wildest})), None);
+        assert_eq!((said.as_str(), effect), (LOCKED_LEVEL, None));
+        let opened = tools
+            .learning
+            .as_ref()
+            .unwrap()
+            .memory()
+            .unlock("wild horses");
+        assert_ne!(opened, crate::ai::memory::Unlock::Wrong);
         let (said, effect) = tools.run(&call("set_tone", json!({"tone": wildest})), None);
         assert!(said.contains(&wildest), "{said}");
         assert_eq!(effect, Some(Effect::Tone(wildest)));
