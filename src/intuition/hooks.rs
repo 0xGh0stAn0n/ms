@@ -513,6 +513,33 @@ mod tests {
     }
 
     #[test]
+    fn the_maps_of_classic_world_are_matched_as_the_minimap_names_them() {
+        let hooks = Hooks::get();
+        let first = |name: &str, level: u32| {
+            hooks
+                .matching(Trigger::MapEntered, &world_in(name, level, true), Tempo::Travel, 0.0)
+                .first()
+                .map(|h| h.id.clone())
+        };
+        // Numbered areas and bracketed names fold to their place.
+        assert_eq!(first("Line 2 <Area 3>", 47).as_deref(), Some("kerning-subway"));
+        assert_eq!(first("Transfer Area", 18).as_deref(), Some("kerning-subway"));
+        assert_eq!(first("Cabin <To Orbis>", 40).as_deref(), Some("airship-ride"));
+        assert_eq!(first("Deep Ant Tunnel II", 26).as_deref(), Some("ant-tunnel"));
+        assert_eq!(first("Ant Tunnel Park", 26).as_deref(), Some("ant-tunnel"));
+        assert_eq!(first("Lorang Lorang", 38).as_deref(), Some("florina-beach"));
+        assert_eq!(first("Sleepy Dungeon V", 58).as_deref(), Some("sleepy-dungeon"));
+        assert_eq!(first("El Nath", 60).as_deref(), Some("el-nath-music"));
+        // The town and its dungeon are two places.
+        assert_eq!(first("Sleepywood", 40).as_deref(), Some("sleepywood-music"));
+        // Every hook about a place carries the tune and a source for it.
+        for hook in hooks.all().iter().filter(|h| !h.place.maps.is_empty()) {
+            assert!(hook.facts.contains_key("bgm"), "{}", hook.id);
+            assert!(!hook.sources.is_empty(), "{}", hook.id);
+        }
+    }
+
+    #[test]
     fn the_party_quest_suggestion_holds_only_in_classic_world_at_its_levels() {
         let hooks = Hooks::get();
         let ids = |w: &World| {
@@ -522,12 +549,19 @@ mod tests {
                 .map(|h| h.id.clone())
                 .collect::<Vec<_>>()
         };
+        // At 22 in Classic World: the party quest first (it is the more
+        // specific: a level band of ten against sixty), then the training
+        // map for the level.
         assert_eq!(
             ids(&world_in("Henesys", 22, true)),
-            ["kerning-pq-suggestion"]
+            ["kerning-pq-suggestion", "training-map-for-the-level"]
         );
         assert!(ids(&world_in("Henesys", 22, false)).is_empty());
-        assert!(ids(&world_in("Henesys", 45, true)).is_empty());
+        assert_eq!(
+            ids(&world_in("Henesys", 45, true)),
+            ["training-map-for-the-level"]
+        );
+        assert!(ids(&world_in("Henesys", 80, true)).is_empty());
         let mut unknown_level = world_in("Henesys", 22, true);
         unknown_level.level = None;
         assert!(ids(&unknown_level).is_empty());
