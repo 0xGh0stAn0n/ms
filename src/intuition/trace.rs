@@ -269,7 +269,7 @@ pub fn replay(entries: &[Entry], level: Option<&str>, seed: u64) -> Replayed {
     let mut intuition = Intuition::new(true, level, seed);
     let mut last_frame_at: Option<f64> = None;
     for entry in entries {
-        out.seconds = entry.t - first;
+        out.seconds = out.seconds.max(entry.t - first);
         match &entry.event {
             Event::World(world) => {
                 for act in intuition.observe(world) {

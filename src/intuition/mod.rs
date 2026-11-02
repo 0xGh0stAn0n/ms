@@ -542,7 +542,7 @@ mod tests {
             if s == 26 {
                 it.thought(thought_for(1, "ellinia-music", "Ellinia", 26.0));
             }
-            for act in it.observe(&frame(s as f64, "Ellinia", hp, 0.08)) {
+            for act in it.observe(&frame(s as f64, "Ellinia", hp, 0.024)) {
                 if matches!(act, Act::Say(_)) {
                     said = true;
                 }
@@ -552,7 +552,7 @@ mod tests {
         assert!(it.tempo() >= Tempo::Combat, "{:?}", it.tempo());
         assert_eq!(it.pool.len(), 1, "a tense moment is waited out");
         // They leave for Henesys: the thought dies, with a note.
-        let acts = it.observe(&frame(45.0, "Henesys", hp, 0.03));
+        let acts = it.observe(&frame(45.0, "Henesys", hp, 0.012));
         assert!(
             acts.iter()
                 .any(|a| matches!(a, Act::Note(n) if n.contains("left the map"))),

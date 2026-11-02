@@ -517,18 +517,38 @@ mod tests {
         let hooks = Hooks::get();
         let first = |name: &str, level: u32| {
             hooks
-                .matching(Trigger::MapEntered, &world_in(name, level, true), Tempo::Travel, 0.0)
+                .matching(
+                    Trigger::MapEntered,
+                    &world_in(name, level, true),
+                    Tempo::Travel,
+                    0.0,
+                )
                 .first()
                 .map(|h| h.id.clone())
         };
         // Numbered areas and bracketed names fold to their place.
-        assert_eq!(first("Line 2 <Area 3>", 47).as_deref(), Some("kerning-subway"));
-        assert_eq!(first("Transfer Area", 18).as_deref(), Some("kerning-subway"));
-        assert_eq!(first("Cabin <To Orbis>", 40).as_deref(), Some("airship-ride"));
-        assert_eq!(first("Deep Ant Tunnel II", 26).as_deref(), Some("ant-tunnel"));
+        assert_eq!(
+            first("Line 2 <Area 3>", 47).as_deref(),
+            Some("kerning-subway")
+        );
+        assert_eq!(
+            first("Transfer Area", 18).as_deref(),
+            Some("kerning-subway")
+        );
+        assert_eq!(
+            first("Cabin <To Orbis>", 40).as_deref(),
+            Some("airship-ride")
+        );
+        assert_eq!(
+            first("Deep Ant Tunnel II", 26).as_deref(),
+            Some("ant-tunnel")
+        );
         assert_eq!(first("Ant Tunnel Park", 26).as_deref(), Some("ant-tunnel"));
         assert_eq!(first("Lorang Lorang", 38).as_deref(), Some("florina-beach"));
-        assert_eq!(first("Sleepy Dungeon V", 58).as_deref(), Some("sleepy-dungeon"));
+        assert_eq!(
+            first("Sleepy Dungeon V", 58).as_deref(),
+            Some("sleepy-dungeon")
+        );
         assert_eq!(first("El Nath", 60).as_deref(), Some("el-nath-music"));
         // The town and its dungeon are two places.
         assert_eq!(first("Sleepywood", 40).as_deref(), Some("sleepywood-music"));

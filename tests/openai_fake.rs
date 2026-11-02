@@ -300,6 +300,32 @@ The quest marker is four maps to the left. Go!"
                                         ]}]}),
                                     )
                                 }
+                                // The mind's thoughts: one for the first hook
+                                // the input names, one that asks (dropped), and
+                                // a plan.
+                                Some(_) if body["text"]["format"]["name"] == "thoughts" => {
+                                    let input = body["input"][0]["content"].as_str().unwrap_or("");
+                                    let hook = input
+                                        .split("id \"")
+                                        .nth(1)
+                                        .and_then(|rest| rest.split('"').next())
+                                        .unwrap_or("none");
+                                    let answer = json!({
+                                        "thoughts": [
+                                            {"hook": hook, "kind": "opinion", "weighed": "fits the moment; fresh", "text": "יואו, הפסנתר של היער הזה הכי יפה במשחק.", "rating": 4.5, "hum": true},
+                                            {"hook": hook, "kind": "quip", "weighed": "a question", "text": "Nice here, right?", "rating": 4.0, "hum": false}
+                                        ],
+                                        "plan": {"goal": "level 30", "next": "the Kerning City party quest", "why": "fast EXP with a party"}
+                                    });
+                                    Response::json(
+                                        200,
+                                        &json!({"output": [
+                                            {"type": "message", "role": "assistant", "content": [
+                                                {"type": "output_text", "text": answer.to_string()}
+                                            ]}
+                                        ]}),
+                                    )
+                                }
                                 // The learner's look back: the notebook, updated.
                                 Some(_) if body["text"]["format"]["name"] == "notebook" => {
                                     let notebook = json!({
@@ -1455,6 +1481,119 @@ fn the_standing_plan_goes_into_the_replys_instructions_after_what_it_learned() {
             .unwrap()
             .contains("next — ")
     );
+}
+
+#[test]
+fn the_mind_thinks_a_cue_through_in_the_background_and_hands_back_thoughts_and_a_plan() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let settings = scratch("mind");
+    std::fs::write(
+        settings.join("about-me.txt"),
+        "- Their main is a Night Lord.\n",
+    )
+    .unwrap();
+    let learning = ms::ai::Learning::load(&settings);
+    let ai = Arc::new(OpenAi::new(
+        "sk-test-key-0123456789abcdef",
+        &base,
+        "cedar",
+        None,
+    ));
+    let mind = ms::intuition::mind::Mind::spawn(ai, learning).expect("a mind");
+    let world = ms::intuition::World {
+        now: 300.0,
+        seen: true,
+        place: Some(ms::intuition::Place {
+            name: "Ellinia".into(),
+            age_s: 2.0,
+        }),
+        level: Some(27),
+        classic: true,
+        ..ms::intuition::World::default()
+    };
+    mind.think(
+        ms::intuition::Cue {
+            trigger: ms::intuition::Trigger::MapEntered,
+            hooks: vec!["ellinia-music".into()],
+            world: world.clone(),
+            tempo: ms::intuition::Tempo::Calm,
+            plan: true,
+        },
+        ms::intuition::mind::Context {
+            language: Some("he-IL".into()),
+            snapshot: "Level 27. HP 100%.".into(),
+            plan: None,
+            lately: vec!["where to now".into()],
+        },
+    );
+    let started = Instant::now();
+    let mut came = Vec::new();
+    while came.len() < 2 && started.elapsed() < Duration::from_secs(30) {
+        came.extend(mind.drain());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(came.len(), 2, "{came:?}");
+    let ms::intuition::mind::Thinking::Thoughts(thoughts) = &came[0] else {
+        panic!("{came:?}");
+    };
+    // The question was dropped; the opinion kept, on the map's basis, with
+    // the hook's tune since the mind felt like humming.
+    assert_eq!(thoughts.len(), 1, "{thoughts:?}");
+    let t = &thoughts[0];
+    assert_eq!(t.id, 1);
+    assert_eq!(t.hook, "ellinia-music");
+    assert_eq!(t.kind, ms::intuition::Kind::Opinion);
+    assert!((t.rating - 4.5).abs() < 1e-6);
+    assert_eq!(t.basis.map.as_deref(), Some("Ellinia"));
+    assert_eq!(t.hum.as_deref(), Some("morning-leaf"));
+    assert!(t.text.contains("הפסנתר"));
+    let ms::intuition::mind::Thinking::Plan(plan) = &came[1] else {
+        panic!("{came:?}");
+    };
+    assert_eq!(plan.next, "the Kerning City party quest");
+    assert_eq!(plan.level, Some(27));
+    // The request that was answered (the stand-in turns the first model
+    // and the reasoning setting away first, like OpenAI does for a key
+    // without them): in the strict schema, with the persona, the guide,
+    // the moment, the hook's facts, the taste card and what they said
+    // lately.
+    let requests = seen.lock().unwrap();
+    let asked: Vec<&Value> = requests
+        .iter()
+        .filter(|r| r["path"] == "/v1/responses")
+        .collect();
+    assert!(
+        asked
+            .iter()
+            .all(|r| r["body"]["text"]["format"]["name"] == "thoughts"),
+        "nothing but the mind asked"
+    );
+    let body = &asked.last().unwrap()["body"];
+    assert_eq!(body["model"], "gpt-6.1-sol");
+    assert_eq!(body["text"]["format"]["name"], "thoughts");
+    assert_eq!(body["text"]["format"]["strict"], true);
+    assert_eq!(body["max_output_tokens"], 900);
+    let instructions = body["instructions"].as_str().unwrap();
+    assert!(
+        instructions.contains("You are MapleSyrup"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("nobody is talking to you"));
+    let input = body["input"][0]["content"].as_str().unwrap();
+    assert!(input.contains("The map: Ellinia."), "{input}");
+    assert!(
+        input.contains("Night Lord"),
+        "what it knows of the player: {input}"
+    );
+    assert!(input.contains("id \"ellinia-music\""));
+    assert!(input.contains("When The Morning Comes"));
+    assert!(input.contains("you love it"));
+    assert!(input.contains("where to now"));
+    assert!(input.contains("Hebrew"));
+    let _ = std::fs::remove_dir_all(&settings);
 }
 
 #[test]

@@ -94,6 +94,13 @@ pub struct Tuning {
     /// After HP fell, the decay waits this long, in seconds.
     pub hold_decay_while_losing_hp_for_s: f64,
     pub events: Events,
+    /// The picture's activity times this counts towards the level at once
+    /// (the accumulator alone would take half a minute to notice a fight
+    /// nobody is losing HP in).
+    pub activity_weight: f32,
+    /// After combat or a peak, this long before the tempo may fall below
+    /// travel: the fight is over when it has been over for a while.
+    pub relax_s: f64,
     /// Below this much going on, nobody is playing.
     pub activity_floor: f32,
     /// The intensity's ceiling (a long fight does not take minutes to
@@ -132,6 +139,8 @@ pub struct Intensity {
     last_hp: Option<f32>,
     /// Until when the decay waits (HP fell lately).
     losing_until: f64,
+    /// Until when the tempo stays at travel or above (a fight lately).
+    relax_until: f64,
     /// Since when nothing has been going on.
     quiet_since: Option<f64>,
     was_dead: bool,
@@ -150,6 +159,7 @@ impl Intensity {
             last: None,
             last_hp: None,
             losing_until: f64::NEG_INFINITY,
+            relax_until: f64::NEG_INFINITY,
             quiet_since: None,
             was_dead: false,
         }
@@ -216,10 +226,24 @@ impl Intensity {
         } else {
             self.quiet_since = None;
         }
-        t.band(self.value)
+        // The level: what built up, and what the picture does right now.
+        let mut tempo = t.band(self.level(w));
+        if tempo >= Tempo::Combat {
+            self.relax_until = now + t.relax_s;
+        } else if now < self.relax_until {
+            tempo = tempo.max(Tempo::Travel);
+        }
+        tempo
     }
 
-    /// The intensity now (0 upward).
+    /// The level the tempo is read from: the intensity plus the picture's
+    /// activity, weighed.
+    pub fn level(&self, w: &World) -> f32 {
+        self.value + w.activity.clamp(0.0, 1.0) * Tuning::get().activity_weight
+    }
+
+    /// The intensity now (0 upward): what events built up, without the
+    /// picture's activity of the moment.
     pub fn value(&self) -> f32 {
         self.value
     }
@@ -256,38 +280,75 @@ mod tests {
         assert!(Tempo::Calm < Tempo::Travel && Tempo::Travel < Tempo::Combat);
     }
 
+    /// The scene's activity as measured on real play at 10 frames a second
+    /// (a Chaos Zakum solo, 190 s: median 0.022, ninth decile 0.027; the
+    /// coach's idle line 0.002).
+    const STILL: f32 = 0.003;
+    const TOWN: f32 = 0.006;
+    const WALKING: f32 = 0.012;
+    const FIGHT: f32 = 0.024;
+
     #[test]
-    fn standing_in_town_is_calm_and_a_fight_climbs_to_combat_then_fades() {
+    fn standing_in_town_is_calm_walking_is_travel_and_a_fight_is_combat_within_seconds() {
         let mut i = Intensity::new();
-        // A near-still screen, full HP: calm. (The scene's activity is the
-        // mean frame-to-frame change: a scrolling camera is a few
-        // hundredths; a fight with effects more.)
+        // A near-still screen, full HP: calm; so is a town with its idle
+        // animation.
         for s in 0..20 {
-            assert_eq!(i.observe(&frame(s as f64, 100.0, 0.004)), Tempo::Calm);
+            assert_eq!(i.observe(&frame(s as f64, 100.0, STILL)), Tempo::Calm);
+        }
+        for s in 20..40 {
+            assert_eq!(i.observe(&frame(s as f64, 100.0, TOWN)), Tempo::Calm);
         }
         // Walking: travel, not combat.
         let mut t = Tempo::Calm;
-        for s in 20..60 {
-            t = i.observe(&frame(s as f64, 100.0, 0.025));
+        for s in 40..80 {
+            t = i.observe(&frame(s as f64, 100.0, WALKING));
         }
         assert_eq!(t, Tempo::Travel);
-        // A fight: the picture moves more and HP drops in bites.
+        // A fight nobody is losing HP in (a strong character): the picture
+        // alone says combat, and says it at once — the scene's own window
+        // has already averaged five seconds.
+        assert_eq!(i.observe(&frame(80.0, 100.0, FIGHT)), Tempo::Combat);
+        for s in 81..110 {
+            assert_eq!(i.observe(&frame(s as f64, 100.0, FIGHT)), Tempo::Combat);
+        }
+        // The fight ends: travel for the relax period, then calm.
+        let relax = Tuning::get().relax_s as i64;
+        // (The last combat frame was at 109: the relax runs from there.)
+        for s in 110..(109 + relax) {
+            assert_eq!(
+                i.observe(&frame(s as f64, 100.0, STILL)),
+                Tempo::Travel,
+                "{s}"
+            );
+        }
+        for s in (109 + relax)..240 {
+            t = i.observe(&frame(s as f64, 100.0, STILL));
+        }
+        assert_eq!(t, Tempo::Calm);
+    }
+
+    #[test]
+    fn hp_falling_in_bites_makes_a_fight_tenser_and_it_fades_once_it_stops() {
+        let mut i = Intensity::new();
+        for s in 0..20 {
+            i.observe(&frame(s as f64, 100.0, TOWN));
+        }
+        // Mobs land hits: 9% every three seconds while the picture moves.
         let mut hp = 100.0;
         let mut tempos = Vec::new();
-        for s in 60..90 {
+        for s in 20..50 {
             if s % 3 == 0 {
                 hp -= 9.0;
             }
-            tempos.push(i.observe(&frame(s as f64, hp, 0.06)));
+            tempos.push(i.observe(&frame(s as f64, hp, FIGHT)));
         }
-        assert!(
-            tempos.iter().any(|t| *t >= Tempo::Combat),
-            "never reached combat: {tempos:?}"
-        );
-        // Standing still again, HP steady: it fades back to calm within a
-        // minute or two.
-        for s in 90..240 {
-            t = i.observe(&frame(s as f64, hp, 0.004));
+        assert!(tempos.iter().all(|t| *t >= Tempo::Combat), "{tempos:?}");
+        assert!(i.value() > 0.3, "{}", i.value());
+        // Standing still, HP steady: back to calm within a minute or two.
+        let mut t = Tempo::Peak;
+        for s in 50..200 {
+            t = i.observe(&frame(s as f64, hp, STILL));
         }
         assert_eq!(t, Tempo::Calm);
     }
@@ -319,8 +380,8 @@ mod tests {
             tempo = i.observe(&frame(s as f64, 100.0, 0.0));
         }
         assert_eq!(tempo, Tempo::Away);
-        // The player moving again ends it at once.
-        assert_eq!(i.observe(&frame(500.0, 100.0, 0.3)), Tempo::Calm);
+        // The player moving again ends it at once (a scroll: travel).
+        assert_eq!(i.observe(&frame(500.0, 100.0, WALKING)), Tempo::Travel);
         let mut hidden = Intensity::new();
         let mut w = frame(0.0, 100.0, 0.0);
         w.seen = false;

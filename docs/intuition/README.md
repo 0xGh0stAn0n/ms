@@ -93,9 +93,16 @@ silence (`silence_boost_per_s`, capped); nothing is said within
 `min_gap_between_own_thoughts_s`, nor more than `at_most_per_10_min`. The
 quiet level more than doubles the gaps and allows one in ten minutes; the
 talkative level lets a 3 through. `tempo.json`: a death is a peak, a
-fight with HP falling in bites is combat within seconds, walking is
-travel, a still screen is calm, nothing for `away_after_s` is away; only
-calm and travel may be spoken in (`tempo_penalty`).
+fight is combat within the scene's five-second window (the picture's
+activity counts at once, `activity_weight`; HP falling in bites adds to
+it), walking is travel, a still screen or a town's idle animation is calm,
+nothing for `away_after_s` is away, and a fight is followed by `relax_s`
+at travel or above; only calm and travel may be spoken in
+(`tempo_penalty`). The activity scale is the scene's own, measured on a
+real recording at 10 frames a second: a boss fight 0.02–0.03, moving
+about 0.012, a dialog open or a town's idle animation 0.003–0.006, the
+coach's idle line 0.002. Replaying that recording's activity through
+`intuition_replay` holds the tempo for the whole fight.
 
 The target the research gives: about half of the thoughts said get a
 word back and no more than one in eight is a disruption (Codellaborator,

@@ -610,11 +610,11 @@ enum Scare {
 pub struct Coach {
     /// Coaching is on: it may speak up on its own.
     pub on: bool,
-    /// The looks at nothing in particular are on. Off while the intuition
-    /// has thoughts of its own ([`crate::intuition`]): two sources of
-    /// company in the same gaps would be a commentator again. The reasons
-    /// (a close call, a streak, a new scene, a level-up, a stall) are not
-    /// held by it.
+    /// The looks at nothing in particular are on (a switch for whoever
+    /// wants the coach's reasons without them; the intuition
+    /// ([`crate::intuition`]) leaves them on and keeps its own gaps from
+    /// the coach's lines). The reasons (a close call, a streak, a new
+    /// scene, a level-up, a stall) are not held by it.
     looks: bool,
     /// When anyone last said anything.
     quiet_since: f64,

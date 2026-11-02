@@ -2251,12 +2251,10 @@ struct Voicing {
 }
 
 /// The intuition follows the coach's switch: off with "stop coaching" (a
-/// thought waiting for an answer counts as told to stop), on with "coach
-/// me" — when there is a mind to think with. The coach's idle looks go the
-/// other way: off while the intuition is on.
+/// thought said lately counts as told to stop), on with "coach me" — when
+/// there is a mind to think with.
 fn set_intuition(
     intuition: &mut ms::intuition::Intuition,
-    coach: &mut ms::coach::Coach,
     has_mind: bool,
     out: &mut Outputs,
     trace: &mut ms::intuition::trace::Tracer,
@@ -2272,7 +2270,6 @@ fn set_intuition(
         }
     }
     intuition.set_on(on);
-    coach.set_looks(!on);
     out.session.line(
         "intuition",
         if on {
@@ -4800,14 +4797,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // asked for that, for good).
     let mut coach = ms::coach::Coach::new(learning.memory().coach.unwrap_or(true));
     // The intuition: thoughts of its own, made in the background and said
-    // in calm gaps (on with the coach; its dial is the player's). While it
-    // is on, the coach keeps its reasons and gives up its idle looks.
+    // in calm gaps (on with the coach; its dial is the player's). The coach
+    // keeps everything it did, its idle looks too: the intuition adds to
+    // the company, it takes nothing away, and the director's gaps keep the
+    // two from talking over each other (a coach's line counts as anyone
+    // speaking).
     let mut intuition = ms::intuition::Intuition::new(
         coach.on && mind.is_some(),
         learning.memory().initiative.as_deref(),
         ai::brain::session_seed(),
     );
-    coach.set_looks(!intuition.on);
     out.session.line(
         "intuition",
         &format!(
@@ -5163,21 +5162,41 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                         ms::intuition::Act::Hum(melody) => {
                             // (On a call the call has the voice; the hum
-                            // waits for the next session at the PC.)
+                            // waits for the next session at the PC.) A
+                            // recording of the tune in a real voice
+                            // (`hums/<id>.wav` in the settings folder) goes
+                            // before the synthesised one.
                             if !out.live
-                                && let Some(samples) = ms::intuition::vocal::hummed(&melody)
                                 && let Some(melody) =
                                     ms::intuition::vocal::Melodies::get().named(&melody)
                             {
-                                out.session
-                                    .line("intuition", &format!("hums: {}", melody.title));
-                                let id = worker.send(Job::Play {
-                                    samples: samples.to_vec(),
-                                    kind: Kind::Info,
-                                    label: melody.title.clone(),
-                                });
-                                if let Some(v) = voicing.as_mut() {
-                                    v.jobs.push(id);
+                                let recorded =
+                                    ms::intuition::vocal::recorded(&settings_dir, &melody.id);
+                                let samples = match &recorded {
+                                    Some(samples) => Some(samples.as_slice()),
+                                    None => ms::intuition::vocal::hummed(&melody.id),
+                                };
+                                if let Some(samples) = samples {
+                                    out.session.line(
+                                        "intuition",
+                                        &format!(
+                                            "hums: {}{}",
+                                            melody.title,
+                                            if recorded.is_some() {
+                                                " (recorded)"
+                                            } else {
+                                                ""
+                                            }
+                                        ),
+                                    );
+                                    let id = worker.send(Job::Play {
+                                        samples: samples.to_vec(),
+                                        kind: Kind::Info,
+                                        label: melody.title.clone(),
+                                    });
+                                    if let Some(v) = voicing.as_mut() {
+                                        v.jobs.push(id);
+                                    }
                                 }
                             }
                         }
@@ -5609,7 +5628,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             set_coaching(&mut coach, &learning, &mut out, on);
                             set_intuition(
                                 &mut intuition,
-                                &mut coach,
                                 mind.is_some(),
                                 &mut out,
                                 &mut trace,
@@ -5867,7 +5885,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 set_coaching(&mut coach, &learning, &mut out, on);
                                 set_intuition(
                                     &mut intuition,
-                                    &mut coach,
                                     mind.is_some(),
                                     &mut out,
                                     &mut trace,
@@ -6032,7 +6049,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             set_coaching(&mut coach, &learning, &mut out, on);
                             set_intuition(
                                 &mut intuition,
-                                &mut coach,
                                 mind.is_some(),
                                 &mut out,
                                 &mut trace,
@@ -6268,7 +6284,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             set_coaching(&mut coach, &learning, &mut out, on);
                             set_intuition(
                                 &mut intuition,
-                                &mut coach,
                                 mind.is_some(),
                                 &mut out,
                                 &mut trace,
@@ -6607,7 +6622,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     set_coaching(&mut coach, &learning, &mut out, on);
                     set_intuition(
                         &mut intuition,
-                        &mut coach,
                         mind.is_some(),
                         &mut out,
                         &mut trace,
