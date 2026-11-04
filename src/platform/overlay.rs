@@ -19,7 +19,8 @@ pub struct GameArea {
     pub top: i32,
     pub width: i32,
     pub height: i32,
-    /// Whether the game is the window in front.
+    /// Whether the game has the focus: the window in front is the game's
+    /// or another of its process's.
     pub foreground: bool,
     /// The game's process, whose sound is turned down while MapleSyrup talks.
     pub pid: u32,
@@ -103,12 +104,20 @@ mod win {
             }
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            // The game has the focus when the window in front is any of its
+            // process's (a dialog of its own), not only the one found by
+            // its title.
+            let front = GetForegroundWindow();
+            let mut front_pid = 0u32;
+            if !front.is_invalid() {
+                GetWindowThreadProcessId(front, Some(&mut front_pid));
+            }
             Some(GameArea {
                 left: origin.x,
                 top: origin.y,
                 width: rect.right - rect.left,
                 height: rect.bottom - rect.top,
-                foreground: GetForegroundWindow() == hwnd,
+                foreground: front == hwnd || (pid != 0 && front_pid == pid),
                 pid,
             })
         }
