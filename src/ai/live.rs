@@ -14,9 +14,10 @@
 //! ```
 //!
 //! The model hears the player directly: it understands whatever language
-//! they speak, follows them when they switch or mix languages, hears them
-//! while it talks (the phone cancels its own voice from its microphone), and
-//! stops and answers when talked over. MapleSyrup's own lines (low HP, a
+//! they speak and answers in the one set on their phone (asked for
+//! another, it sets the phone to it), hears them while it talks (the phone
+//! cancels its own voice from its microphone), and stops and answers when
+//! talked over. MapleSyrup's own lines (low HP, a
 //! level-up) are handed to it to say, so they come in the same voice and
 //! language: the watcher's at most once per 20 s and with the reading
 //! behind them (the PC's `Relay`), so the call passes a number on for HP
@@ -44,6 +45,28 @@ pub const LIVE_MODELS: &[&str] = &[
 pub const TRANSCRIBE_MODEL: &str = "gpt-4o-mini-transcribe";
 /// Where the phone sends its WebRTC offer.
 pub const CALLS_URL: &str = "https://api.openai.com/v1/realtime/calls";
+/// How long the call's model thinks before it speaks: low, the model's own
+/// default. The least ("minimal") is barely quicker to the first sound but
+/// understands far less of what it hears (Artificial Analysis, Oct 2026:
+/// gpt-realtime-2 72% against 97% on Big Bench Audio for 0.02 s; on a
+/// call it answered noise with the game and drifted into English). What
+/// needs real thinking goes to the thinker ([`THINK_TOOL`]). (A model that
+/// takes no such setting is asked again without it.)
+pub const REASONING_EFFORT: &str = "low";
+/// The tool the call hands a question that needs thinking to: Claude when
+/// it is connected, else MapleSyrup's own thinking model (the PC's
+/// `Thinker`). The call says it will think a moment, and says the answer
+/// when it comes.
+pub const THINK_TOOL: &str = "think_it_through";
+/// The tool the call calls instead of speaking, when what it heard was not
+/// said to it: the player talking to someone else, a video, the game's own
+/// sound, noise. (OpenAI's voice prompting guide: a no-op tool for audio
+/// not addressed to the agent.) The phone answers it without asking the
+/// call to speak.
+pub const QUIET_TOOL: &str = "wait_for_user";
+/// Models in the key's list that are not for a call: writing speech down
+/// and translating it.
+const NOT_FOR_CALLS: &[&str] = &["transcri", "translat", "whisper"];
 
 /// Who MapleSyrup is on a call: the same buddy, speaking rather than
 /// writing, in any language.
@@ -51,32 +74,93 @@ const LIVE_PERSONA: &str = "You are MapleSyrup: a fluffy cream-colored dog in a 
 and the player's buddy while they play MapleStory (the current global version). You're on a live voice call with \
 them while they play, like a friend on voice chat.";
 
+/// The call's language, in a section of its own right after who it is:
+/// OpenAI's voice prompting guide pins the language where switching is
+/// unwanted, keeps bridges, tool messages and answers in it, and takes no
+/// language from an accent. On the bench (1 Nov 2026), with the rule as a
+/// bullet among the others, a call set to Hebrew answered English
+/// questions in English and passed the thinker's English on as it came.
+/// `{name}` is the language set on the phone, `{NAME}` it in capitals.
+const LANGUAGE_SET: &str = "# Language
+- SPEAK ONLY {NAME}, the language set on the player's phone. Every word you say is {name}: greetings, answers, \
+\"let me think\" bridges, what the thinker or a tool hands you, the watcher's lines. Game names stay as players say \
+them, inside {name} sentences.
+- The player speaks {name}, mixing in English game words: hear them as {name}. When they say a whole sentence in \
+another language, answer it in {name} all the same.
+- Don't take a language from an accent, a word or two, noise, a video or your own voice coming back.
+- Switch only when the player asks you to speak another language, in any words: call set_language and go on in it \
+at once (it changes their phone's setting too).
+- Write think_it_through's question in {name}.";
+
+/// The call's language when none is set on the phone.
+const LANGUAGE_UNSET: &str = "# Language
+- No language is set on the player's phone: speak the language they speak. Every word you say is in it: \
+greetings, answers, \"let me think\" bridges, what the thinker or a tool hands you, the watcher's lines.
+- Don't take a language from an accent, a word or two, noise, a video or your own voice coming back.
+- When they ask you to speak a language, in any words: call set_language and go on in it at once (it sets their \
+phone's language too).";
+
+/// Whose words come first. On the bench (1 Nov 2026), a call that saw the
+/// player dead with little MP answered "hey, what's up?" with "MP is 3.7
+/// percent, restore it now": the game reading and the rule to say danger
+/// first outweighed what the player said.
+const EVERY_REPLY: &str = "# Every reply
+- Answer what the player just said, first and only: a greeting gets a greeting, a question its answer.
+- What your vision engine reads is for you to see the game by, not to report. Bring up HP, MP, a death, their \
+level or the map only when they ask about the game, when it changes the answer to what they asked, or when a \
+watcher line asks you to.
+- When these compete: the player's words first, then the watcher's line, then the reading.";
+
+/// Speech it couldn't make out, as OpenAI's voice prompting guide words
+/// it ("unintelligible" handled noise better than "inaudible"), and what
+/// was not said to it at all, which it answers with [`QUIET_TOOL`] and no
+/// words. `{in}` is the language to say so in. On the bench (1 Nov 2026)
+/// the player telling his mother he was coming got "OK, sounds like you're
+/// set" without the tool, and nothing with it.
+const UNCLEAR_AUDIO: &str = "# Unclear audio
+- Only respond to clear speech. If what you heard was said to you but unintelligible, noisy, cut off or made no \
+sense: don't guess and don't answer with the game; say in a few words, in {in}, that you didn't catch it (never the \
+same words twice in a row).
+- If it wasn't said to you at all (noise, a video, the game's own sound, the player talking to someone else): call \
+wait_for_user and say nothing.";
+
+/// What to say "didn't catch it" in when no language is set on the phone.
+const UNCLEAR_IN_UNSET: &str = "the language you were speaking";
+
 /// What else a call needs to know, after the rules and the attitude.
 const LIVE_MORE: &str = "On the call:
 - Speak fast, like a gamer on comms: no pauses, no drawn-out words. Short turns; let them talk.
-- Speak the language the player speaks, every time. When they switch languages, switch with them at once; when \
-they mix languages in one sentence (Hebrew and English, say), answer the same way. A language you were told to use \
-\"by default\" is for when their words have no language: it never overrides the one they are speaking now. Say \
-game words the way players say them.
+- When they ask you to talk to them another way (gentler, ruder, swearing or not, no filter), call set_tone; it \
+changes their phone's setting too, where they see it.
 - Never say again what you said in your last two turns unless they ask again. Never report their level, map or bars \
 unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask about \
-the game. If what you heard makes no sense, say in a few words that you didn't catch it.
+the game.
 - If they talk over you, stop and go with what they just said; don't repeat what you had said.
-- When they speak you may also get a message that is not from them: what your vision engine reads off the game \
-right now (level, HP, MP, EXP; values marked \"about\" are estimates) and, now and then, a small picture of the \
-screen with rulers on its edges (0 to 1000 across and down, for pointing at things). Use it like a friend looking \
-at the same screen; never ask them to read the screen to you (look_closer reads small print). If what they say \
-clearly disagrees with what you see, say what you see.
+- When they speak you also get a message that is not from them: what your vision engine reads off the game right \
+now — level, HP, MP, EXP (values marked \"about\" are estimates), the map, what moves on the screen, an open \
+dialog, the things it was taught. That is how you see the game: you get no pictures. Use it like a friend looking \
+at the same screen; never ask them to read the screen to you (look_closer reads small print for you). If what \
+they say clearly disagrees with what you see, say what you see.
+- Questions that need real thinking go to your thinker: exact numbers or calculations (EXP per hour, time to a \
+level, how many potions, mesos), a plan or a route (where to train next, a quest's steps, a build), or comparing \
+options. Like a person who needs a moment: first say in a few words, your own and in their language, that you'll \
+think about it (never the same words twice in a row), then call think_it_through with the whole question and the \
+numbers they gave. If they talk meanwhile, talk with them. When its answer comes, say it short and in your \
+words: the answer first, one reason at most. Never make up a number: anything to work out goes to the thinker. \
+Small talk, jokes and what the reading already says you answer yourself, at once.
 - Now and then a message comes from MapleSyrup's game watcher, never from the player: a line it wants said (low \
 HP or MP, a death, a level-up, something they asked you to watch for, a tip, a correction from a look-up) and \
 the game as read right then; a warning about HP or MP comes with its reading of them at that moment. That \
-reading is newer than any picture you have. Pass the line on in one short clause, in the language you're \
+reading is the newest you have. Pass the line on in one short clause, in the language you're \
 speaking with them and in your attitude: \
 when the line is about HP or MP, say the number (\"HP's at 11, pot now\"), not the watcher's words; otherwise say \
 the thing, in your words, short (\"Rebuff.\" is \"rebuff\", not \"HP's at 96, rebuff\"), and leave the numbers \
 out. Never both. Never restate the whole line, never argue with it, never answer it with what your side shows. \
 A line that comes late (\"N s ago\") is still said, as late news (\"you died a moment ago\"). If the player was \
-talking, their words come first: answer them, then the watcher in a few words.
+talking, their words come first: answer them, then the watcher in a few words. Some of these lines are thoughts of \
+your own that came to you while they played — a remark about where they are, what you think of the music, what \
+we'd do next, something they once said they like: say those as your own thought, in your words, never as something \
+your watcher said.
 - Presence: greet only when your watcher says the phone just connected, never on your own; never ask whether \
 they're still there — your watcher does, when the game idles. When the session facts say they had been quiet for \
 a long while until just now, one short \"welcome back\" is fine, once. Those facts (how long, deaths, level-ups, \
@@ -86,10 +170,11 @@ changes what you'd say.
 as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
 
-Tools (never announce one before using it; after one, a few words at most):
+Tools (never announce one before using it — think_it_through is the one you announce; after one, a few words at \
+most):
 - Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\") or asks \
-you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. \
-Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the \
+you to watch for something, call learn_thing with what they call it and what it looks like (leave the box out: MapleSyrup's \
+eyes find it on the screen). Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the \
 boss is under 20%\"), set alert, threshold and say (what to say then, in their language). The alert is about that \
 thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is \
 watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
@@ -103,34 +188,48 @@ remember something, call remember_fact.
 up), say your best answer first, then call it with the question and what you said; you'll be told only if you \
 were wrong. Never mention it.
 - set_warnings when they want low HP or MP warnings at another percent, or no more of them, or back to the usual.
-- forget_thing when asked to forget something you learned; look_closer to read small text or details.
+- forget_thing when asked to forget something you learned; look_closer with your question to read small text or \
+make out a detail (leave the box out: MapleSyrup's eyes look for you).
 - mark_moment when they ask you to mark or save the moment; set_muted when they ask you to be quiet or to \
 talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 - set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or \
 to start again.";
 
-/// The instructions for a call: who it is, its rules and the attitude the
-/// player picked, what it learned about the player (`learned`: what they
-/// told it, the notebook, their corrections), and the last things said (so a
-/// call picked up again keeps its thread).
+/// The instructions for a call: who it is, its rules and how it talks at
+/// the level of the bar it talks at, what it learned about the player
+/// (`learned`: what they told it, the notebook, their corrections), and the
+/// last things said (so a call picked up again keeps its thread).
 pub fn instructions(
     learned: &str,
     recent: &[String],
     language: Option<&str>,
-    attitude: super::style::Attitude,
+    level: &crate::companion::spectrum::Level,
 ) -> String {
-    let mut text = format!(
-        "{LIVE_PERSONA}\n\n{}\n\n{LIVE_MORE}",
-        super::style::rules(attitude)
-    );
-    if let Some(name) = language
+    let name = language
         .filter(|l| !l.trim().is_empty())
-        .map(super::language::name)
-    {
-        text.push_str(&format!(
-            "\n\nThe player's phone is set to {name}: start in {name} until they speak; then follow them."
-        ));
+        .map(super::language::name);
+    let (pinned, unclear_in) = match name {
+        Some(name) => (
+            LANGUAGE_SET
+                .replace("{NAME}", &name.to_uppercase())
+                .replace("{name}", name),
+            name,
+        ),
+        None => (LANGUAGE_UNSET.to_string(), UNCLEAR_IN_UNSET),
+    };
+    let mut text = format!(
+        "{LIVE_PERSONA}\n\n{pinned}\n\n{EVERY_REPLY}\n\n{}\n\n{}\n\n{LIVE_MORE}",
+        UNCLEAR_AUDIO.replace("{in}", unclear_in),
+        super::style::call_rules(level)
+    );
+    match name {
+        Some(name) => text.push_str(&format!(
+            "\n\nThe language set on the player's phone: {name}. Speak {name}."
+        )),
+        None => text.push_str(
+            "\n\nNo language is set on the player's phone: speak the language they speak.",
+        ),
     }
     if !learned.trim().is_empty() {
         text.push_str(
@@ -149,6 +248,43 @@ pub fn instructions(
     text
 }
 
+/// Where the microphone is, which decides how the call cleans noise from
+/// it. Close to the mouth (a phone in the hand, a headset), everything
+/// farther is noise to drop; across the desk (a PC's or a laptop's, a
+/// webcam's), the player's own voice comes from afar, and cleaning for a
+/// close one drops it too: the call heard noise, made up what was said and
+/// answered that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mic {
+    #[default]
+    Near,
+    Far,
+}
+
+/// The page's words for where its microphone is (`/api/live`'s `mic`): a
+/// phone or a tablet is taken as held close, a PC's browser as across the
+/// desk.
+pub const MIC_NEAR: &str = "near";
+pub const MIC_FAR: &str = "far";
+
+impl Mic {
+    /// The page's word for it; anything else is the usual, close.
+    pub fn from_page(word: Option<&str>) -> Mic {
+        match word.map(str::trim) {
+            Some(MIC_FAR) => Mic::Far,
+            _ => Mic::Near,
+        }
+    }
+
+    /// The Realtime API's noise reduction for it.
+    pub fn noise_reduction(self) -> &'static str {
+        match self {
+            Mic::Near => "near_field",
+            Mic::Far => "far_field",
+        }
+    }
+}
+
 /// How a call listens, as MapleSyrup adapted it to the player.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Tuning {
@@ -158,6 +294,13 @@ pub struct Tuning {
     pub words: Option<String>,
     /// How fast it speaks (1 is its usual pace; a quick talker is snappier).
     pub speed: f64,
+    /// Where the phone's microphone is.
+    pub mic: Mic,
+    /// The language the player's phone is set to, as an ISO-639-1 code: what
+    /// they say is written down in it (left to itself, the transcriber
+    /// wrote noise down as English — "Thank you for watching" — on a call
+    /// in Hebrew). The call itself still hears and follows any language.
+    pub language: Option<String>,
 }
 
 /// A call speaks a little faster than the model's usual pace: it's a game.
@@ -169,6 +312,8 @@ impl Default for Tuning {
             eagerness: "high".into(),
             words: None,
             speed: SPEED,
+            mic: Mic::default(),
+            language: None,
         }
     }
 }
@@ -189,11 +334,16 @@ impl Tuning {
         }
     }
 
-    fn transcription(&self) -> Value {
+    /// How what they say is written down; `language`: told the language
+    /// to expect (a transcriber that won't take it is asked again without).
+    pub fn transcription(&self, language: bool) -> Value {
         let mut transcription = json!({"model": TRANSCRIBE_MODEL});
         if let Some(words) = self.words.as_deref().filter(|w| !w.trim().is_empty()) {
             let words: String = words.chars().take(800).collect();
             transcription["prompt"] = json!(words);
+        }
+        if let Some(code) = self.language.as_deref().filter(|_| language) {
+            transcription["language"] = json!(code);
         }
         transcription
     }
@@ -212,6 +362,39 @@ pub fn tools(definitions: Vec<Value>) -> Vec<Value> {
             t
         })
         .collect()
+}
+
+/// The thinker, as a tool of the call's ([`THINK_TOOL`]): the call hands it
+/// a question that needs working out, and says its answer.
+pub fn think_tool() -> Value {
+    json!({
+        "type": "function",
+        "name": THINK_TOOL,
+        "description": "Hand a question that needs real thinking to MapleSyrup's thinker (Claude, or a stronger model \
+    that works it out): exact numbers or calculations (EXP per hour, time to a level, how many potions, mesos), a plan or \
+    a route (where to train next, a quest's steps, a build), or comparing options. It sees the game as your vision \
+    engine reads it. It takes a few seconds; its answer comes back as this tool's result, for you to say.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The whole question, in the player's words and \
+    language, with the numbers and names they gave and what they want to know."},
+            },
+            "required": ["question"],
+        },
+    })
+}
+
+/// Saying nothing, as a tool of the call's ([`QUIET_TOOL`]).
+pub fn quiet_tool() -> Value {
+    json!({
+        "type": "function",
+        "name": QUIET_TOOL,
+        "description": "Say nothing and call this when what you heard wasn't said to you: the player talking to \
+    someone else (a friend in the room, their stream, another call), a video, the game's own sound, or noise. Never when \
+    they spoke to you, even unclearly: then say in a few words that you didn't catch it.",
+        "parameters": {"type": "object", "properties": {}},
+    })
 }
 
 /// Makes calls: a short-lived key for the phone to talk to OpenAI with.
@@ -244,7 +427,7 @@ impl Live {
             return LIVE_MODELS.iter().map(|m| m.to_string()).collect();
         };
         models.retain(|(id, _)| {
-            id.contains("realtime") && !id.contains("transcri") && !id.contains("translat")
+            id.contains("realtime") && !NOT_FOR_CALLS.iter().any(|not| id.contains(not))
         });
         let rank = |id: &str| {
             if id.starts_with("gpt-realtime") && !id.contains("mini") {
@@ -276,8 +459,11 @@ impl Live {
         tuning: &Tuning,
     ) -> Result<Value, AiError> {
         let mut last = AiError::Parse("no realtime model to try".into());
-        // (A model that won't take the speed is asked again without it.)
+        // (A model that won't take the speed, or how long to think, or a
+        // transcriber that won't take the language, is asked again without.)
         let mut speed = true;
+        let mut reasoning = true;
+        let mut language = true;
         let candidates = self.candidates();
         let mut index = 0;
         while let Some(model) = candidates.get(index).cloned() {
@@ -285,28 +471,32 @@ impl Live {
             if speed {
                 output["speed"] = json!(tuning.speed());
             }
+            let mut session = json!({
+                "type": "realtime",
+                "model": model,
+                "instructions": instructions,
+                "audio": {
+                    "input": {
+                        "noise_reduction": {"type": tuning.mic.noise_reduction()},
+                        "transcription": tuning.transcription(language),
+                        "turn_detection": {
+                            "type": "semantic_vad",
+                            "eagerness": tuning.eagerness(),
+                            "create_response": true,
+                            "interrupt_response": true,
+                        },
+                    },
+                    "output": output,
+                },
+                "tools": tools,
+                "tool_choice": "auto",
+            });
+            if reasoning {
+                session["reasoning"] = json!({"effort": REASONING_EFFORT});
+            }
             let body = json!({
                 "expires_after": {"anchor": "created_at", "seconds": 600},
-                "session": {
-                    "type": "realtime",
-                    "model": model,
-                    "instructions": instructions,
-                    "audio": {
-                        "input": {
-                            "noise_reduction": {"type": "near_field"},
-                            "transcription": tuning.transcription(),
-                            "turn_detection": {
-                                "type": "semantic_vad",
-                                "eagerness": tuning.eagerness(),
-                                "create_response": true,
-                                "interrupt_response": true,
-                            },
-                        },
-                        "output": output,
-                    },
-                    "tools": tools,
-                    "tool_choice": "auto",
-                },
+                "session": session,
             });
             match self
                 .openai
@@ -327,12 +517,27 @@ impl Live {
                         "model": model,
                         "api": "ga",
                         "hint": tuning.words.as_deref().unwrap_or(""),
+                        "quiet": QUIET_TOOL,
                     }));
                 }
                 Err(AiError::Http(400, message))
                     if speed && message.to_lowercase().contains("speed") =>
                 {
                     speed = false;
+                    continue;
+                }
+                Err(AiError::Http(400, message))
+                    if reasoning && message.to_lowercase().contains("reasoning") =>
+                {
+                    reasoning = false;
+                    continue;
+                }
+                Err(AiError::Http(400, message))
+                    if language
+                        && tuning.language.is_some()
+                        && message.to_lowercase().contains("language") =>
+                {
+                    language = false;
                     continue;
                 }
                 // A model this key can't use: the next one.
@@ -370,8 +575,8 @@ impl Live {
             "voice": self.voice,
             "instructions": instructions,
             "modalities": ["audio", "text"],
-            "input_audio_transcription": tuning.transcription(),
-            "input_audio_noise_reduction": {"type": "near_field"},
+            "input_audio_transcription": tuning.transcription(true),
+            "input_audio_noise_reduction": {"type": tuning.mic.noise_reduction()},
             "turn_detection": {"type": "semantic_vad", "eagerness": tuning.eagerness(), "create_response": true, "interrupt_response": true},
             "tools": tools,
             "tool_choice": "auto",
@@ -384,7 +589,7 @@ impl Live {
             .ok_or_else(|| AiError::Parse("no key in the answer".into()))?;
         let url = self.calls_url.replace("/realtime/calls", "/realtime");
         Ok(
-            json!({"key": key, "url": format!("{url}?model={model}"), "model": model, "api": "beta"}),
+            json!({"key": key, "url": format!("{url}?model={model}"), "model": model, "api": "beta", "quiet": QUIET_TOOL}),
         )
     }
 
@@ -398,6 +603,7 @@ impl Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::companion::spectrum::Spectrum;
 
     #[test]
     fn a_call_is_told_who_it_is_what_it_knows_and_what_was_said() {
@@ -405,7 +611,7 @@ mod tests {
             "About the player (they told you this):\n- Their class is Night Lord.",
             &["Player: hey".into(), "MapleSyrup: Hey! Ready?".into()],
             Some("he-IL"),
-            crate::companion::Attitude::Savage,
+            Spectrum::get().of_voice(crate::companion::Attitude::Savage),
         );
         assert!(text.contains("MapleSyrup's rules"));
         assert!(text.contains("Your attitude: savage"));
@@ -414,7 +620,15 @@ mod tests {
         // thing itself otherwise (never both), never argued with; late is
         // still said. Only a warning comes with the reading (a death,
         // "Rebuff." come without).
-        assert!(text.contains("newer than any picture you have"));
+        assert!(text.contains("That reading is the newest you have"));
+        // It sees the game through its vision engine only: no pictures,
+        // and what needs thinking goes to the thinker, announced first.
+        assert!(text.contains("you get no pictures"));
+        assert!(!text.contains("small picture of the screen"));
+        assert!(text.contains(&format!("call {THINK_TOOL} with the whole question")));
+        assert!(text.contains("that you'll think about it"));
+        assert!(text.contains("Never make up a number"));
+        assert!(text.contains("leave the box out: MapleSyrup's eyes find it"));
         assert!(
             text.contains("a warning about HP or MP comes with its reading of them at that moment")
         );
@@ -431,12 +645,12 @@ mod tests {
         assert!(text.contains("never argue with it"));
         assert!(text.contains("their words come first"));
         assert!(!text.contains("say it right away"));
-        assert!(text.contains("switch with them"));
-        assert!(text.contains("set to Hebrew"));
+        assert!(text.contains("call set_language and go on in it at once"));
+        assert!(text.contains("The language set on the player's phone: Hebrew. Speak Hebrew."));
         assert!(text.contains("learned from playing together"));
         assert!(text.contains("Night Lord"));
         assert!(text.contains("MapleSyrup: Hey! Ready?"));
-        let fresh = instructions("", &[], None, Default::default());
+        let fresh = instructions("", &[], None, Spectrum::get().of_voice(Default::default()));
         assert!(fresh.contains("Your attitude: blunt"));
         assert!(!fresh.contains("conversation so far"));
         assert!(!fresh.contains("learned from playing together"));
@@ -472,9 +686,9 @@ mod tests {
 about whatever they say, and say it isn't open only when they ask about the game.";
         assert!(persona.contains(rule), "the conversation lacks: {rule}");
         assert!(LIVE_MORE.contains(rule), "the call lacks: {rule}");
-        // And every call gets them, whatever the attitude.
-        for attitude in crate::companion::Attitude::ALL {
-            let text = instructions("", &[], None, attitude);
+        // And every call gets them, wherever the bar is.
+        for level in Spectrum::get().levels() {
+            let text = instructions("", &[], None, level);
             assert!(text.contains(
                 "greet only when your watcher says the phone just connected, never on your own"
             ));
@@ -500,29 +714,144 @@ is fine, once"
     fn a_call_listens_the_way_it_adapted_to() {
         let usual = Tuning::default();
         assert_eq!(usual.eagerness(), "high");
-        assert!(usual.transcription().get("prompt").is_none());
+        assert!(usual.transcription(true).get("prompt").is_none());
+        assert!(usual.transcription(true).get("language").is_none());
+        assert_eq!(usual.mic.noise_reduction(), "near_field");
         let tuned = Tuning {
             eagerness: "medium".into(),
             words: Some("MapleStory. Names and words the player uses: Zakum, MoonWalker77.".into()),
             speed: 9.0,
+            mic: Mic::Far,
+            language: Some("he".into()),
         };
         assert_eq!(tuned.speed(), 1.5);
         assert_eq!(usual.speed(), SPEED);
         assert_eq!(tuned.eagerness(), "medium");
-        assert_eq!(tuned.transcription()["model"], TRANSCRIBE_MODEL);
+        assert_eq!(tuned.transcription(true)["model"], TRANSCRIBE_MODEL);
         assert!(
-            tuned.transcription()["prompt"]
+            tuned.transcription(true)["prompt"]
                 .as_str()
                 .unwrap()
                 .contains("MoonWalker77")
         );
+        // What they say is written down in the phone's language, unless the
+        // transcriber wouldn't take it.
+        assert_eq!(tuned.transcription(true)["language"], "he");
+        assert!(tuned.transcription(false).get("language").is_none());
+        // A PC's microphone across the desk: its noise is cleaned for that.
+        assert_eq!(tuned.mic.noise_reduction(), "far_field");
         let odd = Tuning {
             eagerness: "very".into(),
             words: None,
             speed: f64::NAN,
+            ..Tuning::default()
         };
         assert_eq!(odd.speed(), 1.0);
         assert_eq!(odd.eagerness(), "high");
+    }
+
+    #[test]
+    fn the_page_says_where_its_microphone_is() {
+        assert_eq!(Mic::from_page(Some(MIC_FAR)), Mic::Far);
+        assert_eq!(Mic::from_page(Some(MIC_NEAR)), Mic::Near);
+        // Anything else, or nothing (an older page): held close, as always.
+        assert_eq!(Mic::from_page(Some("sideways")), Mic::Near);
+        assert_eq!(Mic::from_page(None), Mic::Near);
+    }
+
+    #[test]
+    fn a_call_thinks_a_little_and_keeps_to_the_language_it_was_set_to() {
+        // Low, not the least: the least understood far less of what it heard.
+        assert_eq!(REASONING_EFFORT, "low");
+        let text = instructions(
+            "",
+            &[],
+            Some("he-IL"),
+            Spectrum::get().of_voice(Default::default()),
+        );
+        assert!(text.contains("Speak Hebrew."));
+        // The language in a section of its own, right after who it is and
+        // before the rules: every word in it, whatever it hears; changed
+        // only when asked, by a tool that changes the phone's setting.
+        let section =
+            text.find("# Language\n- SPEAK ONLY HEBREW, the language set on the player's phone.");
+        assert_eq!(section, Some(LIVE_PERSONA.len() + 2), "{text}");
+        assert!(text.find("MapleSyrup's rules").unwrap() > section.unwrap());
+        assert!(text.contains("Every word you say is Hebrew: greetings, answers, \"let me think\" bridges, what the thinker or a tool hands you"));
+        assert!(text.contains(
+            "When they say a whole sentence in another language, answer it in Hebrew all the same."
+        ));
+        assert!(text.contains("Don't take a language from an accent"));
+        assert!(text.contains("Switch only when the player asks you to speak another language"));
+        assert!(text.contains("Write think_it_through's question in Hebrew."));
+        assert!(!text.contains("Speak the language set on their phone (below)"));
+        // Asked to talk another way, the tone tool, which moves the bar.
+        assert!(text.contains("call set_tone; it changes their phone's setting too"));
+        // Unclear speech: said so, in the phone's language, never answered
+        // with the game.
+        assert!(text.contains("# Unclear audio\n- Only respond to clear speech."));
+        assert!(text.contains("say in a few words, in Hebrew, that you didn't catch it"));
+        assert_eq!(text.matches("didn't catch it").count(), 1);
+        let unset = instructions("", &[], None, Spectrum::get().of_voice(Default::default()));
+        assert!(unset.contains(
+            "# Language\n- No language is set on the player's phone: speak the language they speak."
+        ));
+        assert!(unset.contains(
+            "say in a few words, in the language you were speaking, that you didn't catch it"
+        ));
+        assert!(!unset.contains("SPEAK ONLY"));
+    }
+
+    #[test]
+    fn a_call_answers_what_the_player_said_and_leaves_danger_to_the_watcher() {
+        for level in Spectrum::get().levels() {
+            let text = instructions("", &[], Some("en-US"), level);
+            assert!(
+                text.contains("# Every reply\n- Answer what the player just said, first and only")
+            );
+            assert!(
+                text.contains(
+                    "the player's words first, then the watcher's line, then the reading"
+                )
+            );
+            assert!(text.contains("SPEAK ONLY ENGLISH"));
+            // The brain's "danger first" is the watcher's on a call.
+            assert!(!text.contains("Danger first"), "{}", level.id);
+            assert!(
+                text.contains("6. Danger: the watcher tells you"),
+                "{}",
+                level.id
+            );
+        }
+    }
+
+    #[test]
+    fn what_was_not_said_to_it_gets_no_answer() {
+        let tool = quiet_tool();
+        assert_eq!(tool["name"], QUIET_TOOL);
+        assert_eq!(tools(vec![tool]).len(), 1);
+        let text = instructions(
+            "",
+            &[],
+            Some("he-IL"),
+            Spectrum::get().of_voice(Default::default()),
+        );
+        assert!(text.contains(&format!("call {QUIET_TOOL} and say nothing")));
+        // Said to it but not caught: it says so.
+        assert!(text.contains(
+            "If what you heard was said to you but unintelligible, noisy, cut off or made no sense"
+        ));
+    }
+
+    #[test]
+    fn the_thinker_is_a_tool_of_the_call_that_takes_the_whole_question() {
+        let tool = think_tool();
+        assert_eq!(tool["type"], "function");
+        assert_eq!(tool["name"], THINK_TOOL);
+        assert_eq!(tool["parameters"]["required"][0], "question");
+        // It passes as one of the call's tools.
+        let tools = tools(vec![tool]);
+        assert_eq!(tools.len(), 1);
     }
 
     #[test]

@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 pub enum Attitude {
     /// Warm and fun, gentle teasing, no swearing.
     Friendly,
-    /// Direct, cocky and bossy; mild swearing; rude when they earn it. The
-    /// usual.
+    /// Direct, cocky and bossy; sharp when they earn it, never swearing.
+    /// The usual.
     #[default]
     Blunt,
-    /// No filter: swears and roasts the player personally.
+    /// Roasts the player hard and personally, in clean words.
     Savage,
 }
 

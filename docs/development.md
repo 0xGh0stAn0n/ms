@@ -40,7 +40,11 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   and `quality.rs` re-export Syrup's.
 - **`capture.rs`**: which window is the game, and a capture session on it
   (`syrup::capture::Window`; on Windows, Windows.Graphics.Capture with GDI
-  as the fallback; `GameCapture::path` says which).
+  as the fallback; `GameCapture::path` says which). On the compositor's
+  frames a covered window comes through as drawn (`draws_covered`), so the
+  game is in view behind another window too (`game_in_view` in the
+  binary); on the CPU path, whose last resort copies the screen, only in
+  front.
 - **`util/`**: `stages.rs`, per-stage timing of the path from its tracing
   spans; `pool.rs`, the vision engine's worker threads.
 
@@ -124,8 +128,27 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     one below it is a misread until it has held `LOWER_LEVEL_HOLDS` times
     as long, then taken quietly. The EXP bar's wrap only has the sight
     read the number again.
-  - A tone complaint ("don't talk to me this way") drops the attitude to
-    friendly (`commands::tone_complaint`).
+  - A tone complaint ("don't talk to me this way") brings the bar down to
+    the friendly voice's own level (`commands::tone_complaint`).
+  - **The bar** (`companion::spectrum`, `spectrum.json`): how it talks, from
+    a level for young children to the wildest. Each level names the deck
+    voice its own lines use (an `Attitude`) and its instructions for the
+    models (`style::rules`). No level swears — the wild end roasts in clean
+    words (the PM, 1 Nov 2026: no age rules to get into, nothing to answer
+    for with children) — so the whole bar is open to everyone; a test holds
+    every level to "no swearing". Where the player set it is
+    `Memory::tone`, and it talks at `Memory::level`, the same.
+    `Memory::retune` keeps `attitude` the level's voice. The phone posts
+    `/api/tone` and reads `tone` off the status. The bar is on the main
+    screen, right under Start listening. When the level it talks at changes (not
+    at start), `ToneHeard` waits for it to settle and
+    says the level's own `said_when_set` line, in the phone's language
+    when the level has lines in it (English and Hebrew; English
+    otherwise); while Claude talks, Claude
+    gets a `tone` event instead and says one itself. Claude has the
+    level's rules (`claude::tone`) with every `heard` and `phone` event
+    and in `player_profile`, and the brief (`kit/CLAUDE.md`) tells it to
+    follow them.
 - **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
   is fed every frame and returns a `Reason` when a model should look:
   `CloseCall` and `Streak` (reactions: they wait only for the talking to
@@ -144,7 +167,68 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   `coach::scene` is the frame fingerprint (32×18 cells of brightness, a
   few thousand samples whatever the frame's size) and what a run of them
   says: a cut, a new scene once it settled (not a picture seen in the last
-  `SEEN_FOR`), how much is going on.
+  `SEEN_FOR`), how much is going on. While the intuition (below) is on,
+  the coach keeps its reasons and gives up its idle `Look`
+  (`Coach::set_looks`): two sources of company in the same gaps would be a
+  commentator again.
+- **`intuition/`**: MapleSyrup thinking on its own — thoughts made ahead
+  of the moment and said in calm gaps, its own tastes, its own tunes
+  ([docs/intuition/README.md](intuition/README.md) has the research and
+  the reasons). The main loop builds a `World` per frame (`world.rs`: the
+  game as read, who is talking, since when nobody has) and hands it to
+  `Intuition::observe`, which returns `Act`s: `Think(cue)` for the mind,
+  `Say(thought)`, `Hum(melody)`, `Note(line)`. Inside: `tempo.rs` keeps an
+  intensity in the shape of Left 4 Dead's director (HP lost, a death, the
+  picture cutting and moving push it up; it decays, and the decay waits
+  while HP falls) and reads it as a `Tempo` — away, calm, travel, combat,
+  peak (`tempo.json`); `world::Trail` names the boundaries crossed (a map
+  entered, a level gained, revived, the game back in view, the player back
+  after a long quiet); `hooks.rs` holds the rules (`hooks.json`: a `when`,
+  a `where`, a topic, facts with their sources, notes for the model, odds,
+  once-per-session) and the taste card (`persona.json`: what it loves,
+  likes, shrugs at, and why, in tags); `mind.rs` is a thread of its own
+  with its own client that turns the hooks a boundary fired into
+  thoughts — each a line in the player's language with a 1–5 rating of how
+  much it deserves saying, after the model weighed for and against — and
+  keeps the standing plan (`Plan`: goal, next, why), which the
+  conversation gets as `Brain::set_plan` so "what now?" is answered from
+  it; `thoughts.rs` is the pool they wait in, each on its `Basis` (the map,
+  the level, alive, how tense the game may be, when it was made, how long
+  it keeps): a thought whose basis broke is dropped unsaid, with the
+  reason in the log; `director.rs` decides, from numbers and the player's
+  dial (`initiative.json`: quiet, normal, talkative — thresholds, gaps, a
+  cap per ten minutes), whether a thought is said this frame: never while
+  anyone talks or within `min_gap_after_anyone_spoke_s`, never at a tempo
+  whose penalty is silence (combat, peak, away), a bonus for
+  `boundary_window_s` after a boundary, a wish that grows a little with
+  silence and falls to a third right after its topic was spoken (the topics'
+  cooldowns), once-per-session hooks said once; a thought let pass without
+  a word within `response_window_s` stretches every gap by
+  `ignored_backoff_factor` (an answer brings them back; "stop coaching"
+  sets the longest). `vocal.rs` hums `melodies.json` (every melody
+  MapleSyrup's own and marked so: a hummed game theme is a performance of
+  Nexon's composition) through the worker's mouth lane (`Job::Play`), at
+  the voice's 24 kHz; a tune is a phrase of a few seconds (`LONGEST_S`),
+  since the player's window to answer opens when it ends. Everything is
+  tested by replaying frames; the one model call is `mind::think`, with
+  `compose`/`parse` tested without a model. What became of a thought is
+  settled honestly: handed to the voice (`Director::said`), heard
+  (`voiced`, when the worker is done with the line and its hum and what
+  was queued has played) or taken back whole when no sound was made
+  (`unsaid`); the main loop keeps the jobs that say a thought
+  (`Voicing`) and settles them from `Done::Audio`/`Voiced`/`Failed`. The
+  session log's `[intuition]` lines say what was thought, what was said
+  and why, what was dropped and why, and at the end how many thoughts were
+  answered, let pass or shushed — the measure to tune the data by
+  (`tools/intuition_table.py` reads them into tables, per hook, kind,
+  dial and tempo; the session's record carries the counts too). And
+  `trace.rs` writes the session's intuition as numbers — a `World` at
+  most once a second, the mind's thoughts, the player's words as events,
+  the voice done, the dial — to `intuition.jsonl` beside the log, so that
+  `intuition_replay` can run it again with today's `initiative.json`,
+  `tempo.json` and `hooks.json`, without the game, the model or the voice,
+  and show when it would speak now and why it held its tongue the rest of
+  the time: the data is tuned on replays, then played.
 - **`ai/`**: the model clients, the teaching loop, the tools, the coach's
   look (`coach()`). The worker is two lanes (`spawn_brains`):
   `Worker::send` routes `Job::Speak`, MapleSyrup's own lines, to the mouth
@@ -184,6 +268,50 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     reload is Quiet. A player it does not know (`Learning::knows_player`)
     hears `TERMS` once a session, `TERMS_AFTER` after the clip hello, or
     from the call's own greeting (`new_player` in the status).
+  - **Talker and thinker** (`ai::live`, `ai::thinker`): with an OpenAI key
+    the live call is the voice, in every mode: OpenAI's newest realtime
+    model, asked for `REASONING_EFFORT` ("low", the model's default: the
+    least, "minimal", was barely quicker and understood far less — it
+    answered noise with the game), seeing the game only as the vision
+    engine reads it (`/api/eyes?image=0` with the player's words; the game
+    not seen — `seen: false` — is told once, not with every word; no
+    pictures anywhere in a reply or a coach's look — `look_closer` and
+    `learn_thing` take no box then, and the PC's eyes look over the whole
+    screen). The page says where its microphone is (`mic`: a phone near, a
+    PC's browser far; `live::Mic` picks the noise reduction), and what the
+    player says is written down in the phone's language
+    (`Tuning::language`, `language::code`). Its instructions open, after
+    who it is, with short sections (OpenAI's voice prompting guide): the
+    language (`LANGUAGE_SET`: every word in the phone's language, the
+    thinker's and the watcher's too; none taken from an accent or a word),
+    every reply (`EVERY_REPLY`: what the player just said, first; the game
+    reading is to see by, not to report) and unclear audio
+    (`UNCLEAR_AUDIO`); on a call, danger is the watcher's to raise
+    (`style::call_rules`, rule 6), the brain keeps "danger first". The
+    bench measured each before it shipped (`tools/bench_variants`,
+    `tools/run-bench.cmd`). The call answers in the
+    phone's language whatever is spoken to it; asked for another language
+    or another way of talking, it calls `set_language` (one of
+    `language::LOCALES`) or `set_tone` (`Effect::Language`,
+    `Effect::Tone`): the PC sets it as if picked on the phone
+    (`ask_language`, `set_tone`), the phone's picker or bar follows, and
+    the page hands the call its instructions again — and, for a language,
+    the transcription in it (`retune(tone, language)`; `/api/instructions`
+    carries `transcription`). What was not said to it (noise, a video, the
+    player talking to someone else) it answers with `QUIET_TOOL` and no
+    words; the page answers that tool itself (`liveQuiet`, its name from
+    `/api/live`'s `quiet`) and asks for no turn, and the log says "kept
+    quiet". A question that needs working out it
+    announces like a person and hands over through `THINK_TOOL`: the PC
+    (`LiveService::think`) posts it to Claude's board as a `question`
+    (`Board::ask`) while a Claude Code session listens and waits
+    `CLAUDE_WAIT` for its `say` with that `question_id` (`Board::answer`),
+    else asks its own model at `thinker::EFFORT`; the page sends each tool's
+    output as it comes (`liveTool`), so the talk goes on meanwhile. While a
+    call can be had (`live_ok`), Claude is the thinker only
+    (`Board::set_thinker_only`): no heard or game events reach it, and a
+    `say` that answers no question is refused, with why. Logged as
+    `[think]`.
   - **The call** (`Relay`): its own lines go to a live call at most once
     per `RELAY_GAP` (a button's answer at once, outside the relay), the
     newest of each kind waiting for the gap; an
@@ -209,11 +337,45 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     for it (`playNextClip`, `blocked`); at the tap the hello and the terms
     play, and a clip no longer news is dropped — `/api/state`'s `clips`
     carry kind and age; a warning past `SAY_STALE_MS`, news past
-    `NEWS_STALE_MS`. `hearingLanguage` turns the clip-mode recogniser to
+    `NEWS_STALE_MS` (`tooOld`). A message is as old as the PC made it
+    (`lineAge`: its `t` against the PC's `uptime`), not as its arrival:
+    after a stalled link a warning made before it is shown, not said, by
+    the call or the device's own voice. The recogniser's `network` error
+    (the browser's speech service did not answer) is retried in silence;
+    `NETWORK_ERRORS_TOLD` in a row with nothing heard between them is a
+    note, worded for any device (`rec_offline` when `navigator.onLine` is
+    false, else `rec_unreachable`), gone once words are heard or the
+    device is back online. On the PC a warning carries the bar it is about
+    (`companion::About`); a potion on that bar before its voice is heard
+    drops it — its voice being made (`Outputs::answered`), its clip held
+    for the player's turn (`drop_answered_clips`), parked for the call's
+    gap (`hand`). `hearingLanguage` turns the clip-mode recogniser to
     Hebrew after two Hebrew sentences on the call (or one long one) and
     back after two English ones, shown beside the language picker (`#lang`,
     on the main screen) with an × to undo; `/api/state` carries a boot id,
     and a page open across a restart starts over.
+- **Lines said later than they were written.** A model writes slots, not
+  the numbers it read (`{hp}`, `{hp_now}`, `{mp}`, `{exp}`, `{level}`…;
+  `companion::fresh::SLOTS` is the one list, `guide()` what the models are
+  told); `Fresh` keeps the values of the moment (the main loop feeds it
+  every frame) and the worker fills a line just before its voice is made
+  (`Job::Say`, `Saying::take`, the coach's line; before `for_speech`, which
+  drops underscores). A line of Claude's own (no `answers`) is refused by
+  the board once the game changed since the last event (`Basis`: dead or
+  alive, the map).
+- **With Claude, his words get an answer.** The board knows whether his
+  newest words were answered (`waiting_since`: any line of Claude's said
+  after them); while they wait, game events are held in the binary
+  (`ClaudeWait`), and after `board::ANSWER_WAIT` MapleSyrup's own brain
+  answers them (`answered_here`; Claude's `say` for those words is then
+  refused, with why). Speech streams give up after `openai::VOICE_STALL`
+  with nothing coming (curl's low-speed limit), and the other voice says
+  the line.
+- **The recording** (`app/recorder.rs`, `bin/maplesyrup/recording.rs`):
+  Desktop Duplication can lose the screen mid-recording (a game going full
+  screen); two looks with no frame (`SCREEN_LOST_LOOKS`) save it and start
+  again through GDI (`Picture::ScreenWithoutDuplication`). The mixer counts
+  the frames with each sound (`Sounded`), said in the log at save.
 - **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
   screen, the console and voice, the dashboard and preview, the overlay.
 
@@ -351,16 +513,21 @@ The phone page, against a stand-in PC in a headless Chromium (`pip install
 playwright && playwright install chromium`; from the repository root):
 
 ```sh
-python3 tools/phone_ui_check.py              # all five scenarios
+python3 tools/phone_ui_check.py              # all seven scenarios
 python3 tools/phone_ui_check.py live hello   # some of them
 ```
 
-`ui` (the main screen, Settings, the toggle's hello), `recognition` and
-`loudness` (turn-taking: a stand-in recognizer, a microphone fed from a
-file), `live` (a stand-in call: the relay, urgency and drops, a warning's
-colour and bark, the recogniser's Hebrew, the call off when the page is
-hidden) and `hello`, which runs under the browser's own autoplay policy
-(no clip before a tap, as on a phone; the other four allow autoplay).
+`ui` (the main screen, Settings, the toggle's hello), `recognition`,
+`loudness`, `talkover` and `pcvoice` (turn-taking: a stand-in recognizer, a
+microphone fed from a file — a short word over the phone's voice pauses it,
+the PC's `go_on` lets it go on at once, and a louder voice as it goes on
+pauses it again; a short word louder than its voice on the PC is told to the
+PC, not once more after a `go_on`, and at once when its voice begins again a
+moment later), `live` (a stand-in call: the relay,
+urgency and drops, a warning's colour and bark, the recogniser's Hebrew, the
+call off when the page is hidden) and `hello`, which runs under the
+browser's own autoplay policy (no clip before a tap, as on a phone; the
+other six allow autoplay).
 `PHONE_PAGE=<path>` runs them against another copy of the page, to see a
 check fail against the page as it was.
 

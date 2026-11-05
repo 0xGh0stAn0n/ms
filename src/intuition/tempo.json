@@ -1,0 +1,27 @@
+{
+  "_about": "How tense the game is, from what the vision engine reports. The intensity is an accumulator in the shape of Left 4 Dead's director (Booth, GDC 2009): events push it up, it decays with time, and the decay pauses while HP keeps falling. On top of it the picture's own activity counts at once (a fight is seen within the scene's five-second window, not minutes later), and a fight is followed by a relax period before small talk may resume. The tempo is the band the level falls in. Every number here is tuned by replaying sessions, never in code. The activity scale is the scene's (src/coach/scene.rs: mean frame-to-frame change at 10 frames a second, 0–1), measured on a real boss fight at 0.02–0.03, the coach's idle line at 0.002.",
+  "decay_per_second": 0.93,
+  "hold_decay_while_losing_hp_for_s": 4.0,
+  "events": {
+    "hp_lost_per_percent": 0.03,
+    "hp_low_percent": 50.0,
+    "hp_low_per_second": 0.04,
+    "_hp_low_per_second": "per second with HP under hp_low_percent, only while HP fell within hold_decay_while_losing_hp_for_s",
+    "death": 1.2,
+    "scene_cut": 0.12,
+    "activity_per_second": 0.3
+  },
+  "activity_weight": 20.0,
+  "_activity_weight": "the picture's activity times this counts towards the level at once: a boss fight (0.025) alone reads combat (0.5), walking (0.012) travel (0.24), a town's idle animation (0.005) calm (0.10)",
+  "relax_s": 20.0,
+  "_relax_s": "after combat or a peak, this long before the tempo may fall below travel",
+  "activity_floor": 0.002,
+  "at_most": 3.0,
+  "away_after_s": 90.0,
+  "bands": [
+    { "id": "peak", "at_least": 0.9 },
+    { "id": "combat", "at_least": 0.4 },
+    { "id": "travel", "at_least": 0.16 },
+    { "id": "calm", "at_least": 0.0 }
+  ]
+}

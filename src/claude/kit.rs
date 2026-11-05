@@ -128,8 +128,9 @@ pub fn rule_path(path: &Path) -> String {
 /// with it); MapleSyrup (one folder up) started for Claude only — it makes
 /// do with one already running with a window, and takes over from one the
 /// Claude app runs in the background — with what the launcher itself was
-/// given (`--tunnel`: the phone over the internet, as the installer's
-/// shortcut starts it) — then Claude Code with the channel:
+/// given (an older installer's shortcut still says `--tunnel`, which does
+/// nothing now: the page opens in this PC's browser) — then Claude Code
+/// with the channel:
 /// Sonnet at low effort, quick enough to talk with (`/model` and `/effort`
 /// change it); auto mode, where Claude's own check of each action stands in
 /// for the prompts nobody would answer while he plays; and Remote Control
@@ -171,7 +172,7 @@ pub fn launcher() -> String {
         "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\" --claude-only %*",
         "echo.",
         "echo Claude is starting in this window. Answer its questions here: to \"development channel\" choose",
-        "echo \"I am using this for local development\"; to auto mode, yes. Then talk to it from the phone.",
+        "echo \"I am using this for local development\"; to auto mode, yes. Then talk to it on the page MapleSyrup opens in your browser.",
         "echo The first time, Claude Code also asks you to log in to your Claude account: a browser opens.",
         "echo.",
         "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --permission-mode auto --remote-control MapleSyrup",
@@ -334,9 +335,17 @@ pub fn installer_cmd() -> String {
 /// character) at its end.
 pub fn brief(about: Option<&str>) -> String {
     let about = about.map(str::trim).filter(|a| !a.is_empty());
+    // (How his numbers are said: the slots MapleSyrup fills when the line is
+    // said, from the one list of them.)
+    let numbers = format!(
+        "{BRIEF}\n## His numbers out loud\n\n{}\n",
+        crate::companion::fresh::guide()
+    );
     match about {
-        Some(about) => format!("{BRIEF}\n## About him (MapleSyrup's file about him)\n\n{about}\n"),
-        None => BRIEF.to_string(),
+        Some(about) => {
+            format!("{numbers}\n## About him (MapleSyrup's file about him)\n\n{about}\n")
+        }
+        None => numbers,
     }
 }
 
@@ -382,6 +391,20 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_brief_tells_claude_how_long_his_words_wait_for_it() {
+        let wait = format!("{} seconds", super::super::board::ANSWER_WAIT.as_secs());
+        assert!(BRIEF.contains(&wait), "the brief must say {wait}");
+        // And how long the call waits for its answer to a question.
+        let wait = format!(
+            "within {} seconds",
+            crate::ai::thinker::CLAUDE_WAIT.as_secs()
+        );
+        assert!(BRIEF.contains(&wait), "the brief must say {wait}");
+        assert!(BRIEF.contains("kind=\"question\""));
+        assert!(BRIEF.contains("question_id"));
+    }
 
     #[test]
     fn the_mcp_config_starts_the_bridge_from_a_path_with_hebrew_in_it() {
@@ -544,6 +567,10 @@ mod tests {
     fn the_brief_tells_claude_to_talk_through_say_and_keeps_the_players_own() {
         assert!(BRIEF.contains("`say`"));
         assert!(BRIEF.contains("Classic World"));
+        // How it talks to him is the bar's: its rules come as it moves.
+        assert!(BRIEF.contains("## How you talk to him"));
+        assert!(BRIEF.contains("`tone` event"));
+        assert!(crate::claude::channel::CHANNEL_INSTRUCTIONS.contains("kind=\"tone\""));
         assert!(
             BRIEF.contains("It can be about\n  anything, not only the game"),
             "what he says isn't only about the game"
@@ -554,7 +581,11 @@ mod tests {
         let with = brief(Some(about));
         assert!(with.starts_with(BRIEF));
         assert!(with.ends_with(&format!("{about}\n")));
-        assert_eq!(brief(Some("  \n")), BRIEF);
+        // With nothing about him, the brief and how his numbers are said.
+        let plain = brief(Some("  \n"));
+        assert!(plain.starts_with(BRIEF));
+        assert!(plain.contains(&crate::companion::fresh::guide()));
+        assert!(!plain.contains("## About him"));
         let dir = std::env::temp_dir().join(format!(
             "ms-claude-kit-{}",
             crate::phone::tls::random_hex(4)

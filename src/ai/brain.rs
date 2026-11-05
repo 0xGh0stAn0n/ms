@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use super::memory::Learning;
 use super::openai::{Delivery, Turn};
 use super::style::{self, Attitude};
+use crate::companion::spectrum::{Level, Spectrum};
 use crate::companion::{Deck, GameView, Gauge, Kind, Observation, Progress, SoFar};
 
 /// Turns of conversation kept (a turn is one sentence each way).
@@ -311,7 +312,8 @@ announce a level-up or mention their level unless asked.
 - Don't say again what you said in your last two replies unless they ask again. Never report their level, map or \
 bars unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask \
 about the game. If what you heard makes no sense, say in a few words you didn't catch it; don't guess.
-- If your last reply ends with \"…\", they talked over you there: don't repeat it; go with what they said now.
+- If your last reply ends with \"…\", they talked over you: don't repeat it; answer what they said ([silent] \
+if only to stop you).
 - Trust your eyes: use what you see when it matters (values marked \"about\" are estimates); if the screen clearly \
 shows something other than what they say, say what you see; never ask them to read it to you — look closer.
 - When they correct you, take it in a word and keep it (note_correction); what they corrected you on before beats what you think you know.
@@ -359,6 +361,15 @@ fn attitude_of(learning: Option<&Learning>, fallback: Attitude) -> Attitude {
     learning.map(|l| l.memory().attitude).unwrap_or(fallback)
 }
 
+/// The level of the bar it talks at ([`super::memory::Memory::level`]), or
+/// `fallback`'s own level when nothing keeps it.
+fn level_of(learning: Option<&Learning>, fallback: Attitude) -> &'static Level {
+    match learning {
+        Some(learning) => learning.memory().level(),
+        None => Spectrum::get().of_voice(fallback),
+    }
+}
+
 /// The ElevenLabs voice the player picked, if they did.
 fn voice_of(learning: Option<&Learning>) -> Option<String> {
     learning
@@ -388,6 +399,14 @@ pub struct Brain {
     /// The language he asked to be answered in ("talk to me in English"),
     /// until he asks for another.
     asked_language: Option<&'static str>,
+    /// The game's values as they are now, which the slots of its lines
+    /// (`{hp}`…) are filled with when they are said (None: no slots, as in
+    /// the tests).
+    pub fresh: Option<std::sync::Arc<crate::companion::fresh::Fresh>>,
+    /// The standing plan the intuition's mind keeps (what to suggest when
+    /// asked what to do), as a paragraph for the instructions; None when
+    /// there is none yet ([`Brain::set_plan`]).
+    plan: Option<String>,
 }
 
 /// Who the player is, for the rules: his name as his own file says it (or
@@ -520,7 +539,36 @@ impl Brain {
             here_en: Deck::seeded(session_seed()),
             here_he: Deck::seeded(session_seed()),
             asked_language: None,
+            fresh: None,
+            plan: None,
         }
+    }
+
+    /// The standing plan changed: `text` is the paragraph for the
+    /// instructions (None: no plan).
+    pub fn set_plan(&mut self, text: Option<String>) {
+        self.plan = text.filter(|t| !t.trim().is_empty());
+    }
+
+    /// The standing plan's paragraph, when there is one.
+    pub fn plan(&self) -> Option<&str> {
+        self.plan.as_deref()
+    }
+
+    /// `text` with its slots (`{hp}`…) filled with the game's values as
+    /// they are now (unchanged without [`Brain::fresh`]).
+    pub fn fill(&self, text: &str) -> String {
+        match &self.fresh {
+            Some(fresh) => fresh.fill(text).text,
+            None => text.to_string(),
+        }
+    }
+
+    /// What the model is told about the slots, when there are any.
+    pub fn slots_guide(&self) -> Option<String> {
+        self.fresh
+            .as_ref()
+            .map(|_| crate::companion::fresh::guide())
     }
 
     /// The next "same as before" line, in its attitude: a card of the deck
@@ -647,11 +695,7 @@ impl Brain {
     /// Who it is: the part of the instructions that stays the same from one
     /// reply to the next (so OpenAI keeps it cached, and answers sooner).
     pub fn persona(&self) -> String {
-        let mut text = format!(
-            "{PERSONA}\n\n{}\n\n{MORE}\n{}",
-            style::rules(self.attitude()),
-            who_he_is(self.player_name().as_deref())
-        );
+        let mut text = persona_text(self.level(), self.player_name().as_deref());
         if self.learning.is_none() && !self.about_player.trim().is_empty() {
             text.push_str("\n\nAbout the player (they told you this):\n");
             text.push_str(self.about_player.trim());
@@ -664,12 +708,38 @@ impl Brain {
     /// text can't spell it (the owner's Michael came out as Armani, Miha,
     /// Mako, Miguel and Mikael, and each was learned and used).
     pub fn player_name(&self) -> Option<String> {
-        match &self.learning {
-            Some(learning) => learning.player_name(),
-            None => super::memory::name_in(&self.about_player),
-        }
+        player_name_of(self.learning.as_ref(), &self.about_player)
     }
+}
 
+/// The player's name as [`Brain::player_name`] has it, for code without a
+/// brain.
+fn player_name_of(learning: Option<&Learning>, about_player: &str) -> Option<String> {
+    match learning {
+        Some(learning) => learning.player_name(),
+        None => super::memory::name_in(about_player),
+    }
+}
+
+/// Who MapleSyrup is: the persona, the bar's rules at `level`, the rest,
+/// and who the player is — the one text [`Brain::persona`] and
+/// [`persona_for`] both start from, so the two lanes never drift apart.
+fn persona_text(level: &Level, player_name: Option<&str>) -> String {
+    format!(
+        "{PERSONA}\n\n{}\n\n{MORE}\n{}",
+        style::rules(level),
+        who_he_is(player_name)
+    )
+}
+
+/// Who MapleSyrup is, as [`Brain::persona`] has it, for a lane that has no
+/// brain of its own (the intuition's mind thinks in the background): the
+/// persona at the bar's level, with the player's name from his own file.
+pub fn persona_for(learning: &Learning) -> String {
+    persona_text(learning.memory().level(), learning.player_name().as_deref())
+}
+
+impl Brain {
     /// The language he asked to be answered in, kept until he asks for
     /// another ([`asked_language`]); else `None`.
     pub fn asked_language(&self) -> Option<&'static str> {
@@ -697,6 +767,12 @@ impl Brain {
     /// How it talks now (the player picks it on the phone).
     pub fn attitude(&self) -> Attitude {
         attitude_of(self.learning.as_ref(), self.attitude)
+    }
+
+    /// The level of the bar it talks at now (the player sets the bar on the
+    /// phone).
+    pub fn level(&self) -> &'static Level {
+        level_of(self.learning.as_ref(), self.attitude)
     }
 
     /// The ElevenLabs voice the player picked, if they did.
@@ -827,12 +903,11 @@ fn presence(so_far: &SoFar) -> Option<String> {
 
 /// What the companion sees, as a few plain lines for the model, and what
 /// a friend in the room would know of the session so far (`so_far`).
-/// `in_front`: whether the game's screen is being read — its own frames
-/// (Windows.Graphics.Capture), or the game's process has the focus. With
-/// another window in focus and the frames a copy of the screen, the
-/// picture is withheld, and the model is told so rather than told the game
-/// is in view and given no picture (nor told it is hidden: it may well be
-/// in plain sight on the screen).
+/// `in_front`: whether the game is in view (in front, or behind another
+/// window while the capture gets it as it is drawn) — behind another window
+/// on a capture that copies the screen it is still read, but the picture is
+/// withheld, and the model is told so rather than told the game is in view
+/// and given no picture.
 pub fn snapshot_with_view(
     obs: Option<&Observation>,
     in_front: bool,
@@ -850,8 +925,8 @@ pub fn snapshot_with_view(
             lines.push("The MapleStory window is open and in view.".to_string())
         }
         Some(GameView::Seen(_)) => lines.push(
-            "The MapleStory window is open, but another window has the focus (you get no \
-picture of it until the game has the focus again)."
+            "The MapleStory window is open, behind another window (you get no picture of it \
+until it is in front)."
                 .to_string(),
         ),
         Some(GameView::Unavailable(why)) => lines.push(format!(
@@ -914,9 +989,6 @@ pub struct Facts {
     pub job: Option<String>,
     /// HP, MP and EXP, in percent, as far as they are known.
     pub bars: Vec<f32>,
-    /// HP and MP in percent, by name ([`freshen`]).
-    pub hp: Option<f32>,
-    pub mp: Option<f32>,
 }
 
 impl Facts {
@@ -936,72 +1008,8 @@ impl Facts {
                 .flatten()
                 .map(|g| g.percent)
                 .collect(),
-            hp: obs.hp.map(|g| g.percent),
-            mp: obs.mp.map(|g| g.percent),
         }
     }
-}
-
-/// `sentence` with the HP or MP it gives as `asked` had it, when the bar
-/// has moved since (by 5 points or more), given as it is `now`: the reply
-/// is written from the snapshot taken when he spoke, and heard seconds
-/// later ("HP 34%" after a potion took it to 43%). Only a number in a
-/// sentence that names the bar is touched.
-pub fn freshen(sentence: &str, asked: &Facts, now: &Facts) -> String {
-    let moved = moved_bars(sentence, asked, now);
-    if moved.is_empty() {
-        return sentence.to_string();
-    }
-    let mut out = String::with_capacity(sentence.len());
-    let mut rest = sentence;
-    while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
-        out.push_str(&rest[..start]);
-        rest = &rest[start..];
-        let end = rest
-            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-            .unwrap_or(rest.len());
-        let number = rest[..end].trim_end_matches('.');
-        let said = number.parse::<f32>().ok();
-        match moved
-            .iter()
-            .find(|(was, _)| said.is_some_and(|n| (n - was).abs() <= 0.6))
-        {
-            Some((_, is)) => out.push_str(&format!("{is:.0}")),
-            None => out.push_str(number),
-        }
-        rest = &rest[number.len()..];
-    }
-    out.push_str(rest);
-    out
-}
-
-/// The bars `sentence` names whose percent moved by 5 points or more from
-/// `asked` to `now`: (then, now) each.
-fn moved_bars(sentence: &str, asked: &Facts, now: &Facts) -> Vec<(f32, f32)> {
-    const HP: &[&str] = &["hp", "health", "life", "חיים"];
-    const MP: &[&str] = &["mp", "mana", "מאנה", "מנה"];
-    let lower = sentence.to_lowercase();
-    let names = |words: &[&str]| words.iter().any(|w| lower.contains(w));
-    [(asked.hp, now.hp, HP), (asked.mp, now.mp, MP)]
-        .into_iter()
-        .filter_map(|(was, is, words)| {
-            let (was, is) = (was?, is?);
-            ((was - is).abs() >= 5.0 && names(words)).then_some((was, is))
-        })
-        .collect()
-}
-
-/// Whether `sentence` gives a bar's percent as `asked` had it, and the bar
-/// has moved since: advice nobody asked for that is about a moment gone
-/// ("drink a potion, you're at 12%" with HP back at 100%), to be dropped
-/// rather than corrected ([`freshen`] is for an answer).
-pub fn stale(sentence: &str, asked: &Facts, now: &Facts) -> bool {
-    let moved = moved_bars(sentence, asked, now);
-    !moved.is_empty()
-        && sentence
-            .split(|c: char| !(c.is_ascii_digit() || c == '.'))
-            .filter_map(|n| n.trim_end_matches('.').parse::<f32>().ok())
-            .any(|n| moved.iter().any(|(was, _)| (n - was).abs() <= 0.6))
 }
 
 /// Words a player asks about the game with ("what level am I", "where
@@ -4224,17 +4232,15 @@ Pot now, you're at 20.",
             snapshot(None, &Progress::default(), &SoFar::default())
                 .starts_with("No MapleStory window is open right now.")
         );
-        // Another window with the focus (the frames a copy of the screen):
-        // the picture is withheld, and the model is told so instead of
-        // being told it can see the game and given no picture — and not
-        // told the game is hidden, which it need not be.
+        // The game behind another window: still read (the bars, the
+        // level), but the picture is withheld, and the model is told so
+        // instead of being told it can see the game and given no picture.
         let behind = snapshot_with_view(Some(&obs), false, &progress, &so_far);
         assert!(
-            behind.starts_with("The MapleStory window is open, but another window has the focus"),
+            behind.starts_with("The MapleStory window is open, behind another window"),
             "{behind}"
         );
         assert!(!behind.contains("in view"), "{behind}");
-        assert!(!behind.contains("behind"), "{behind}");
         assert!(behind.contains("HP 1291 of 1351 (82%), MP about 40%."));
         assert_eq!(
             snapshot_with_view(Some(&obs), true, &progress, &so_far),
@@ -4730,8 +4736,8 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
         ("Sure thing, boss.", "Sure thing, boss."),
         ("Of course, genius. Pot.", "Of course, genius. Pot."),
         (
-            "Good question, dumbass. It's Henesys.",
-            "Good question, dumbass. It's Henesys.",
+            "Good question, rookie. It's Henesys.",
+            "Good question, rookie. It's Henesys.",
         ),
         ("Of course, you idiot.", "Of course, you idiot."),
         ("Certainly, captain obvious.", "Certainly, captain obvious."),
@@ -4875,7 +4881,6 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: None,
             job: None,
             bars: vec![48.0, 40.0],
-            ..Default::default()
         }
     }
 
@@ -4886,54 +4891,7 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WANWANBUJIO".into()),
             job: Some("Beginner".into()),
             bars: vec![100.0, 100.0, 49.84],
-            ..Default::default()
         }
-    }
-
-    #[test]
-    fn advice_about_a_bar_that_has_moved_since_is_stale() {
-        let asked = Facts {
-            hp: Some(12.0),
-            mp: Some(80.0),
-            ..Default::default()
-        };
-        let now = Facts {
-            hp: Some(100.0),
-            mp: Some(80.0),
-            ..Default::default()
-        };
-        assert!(stale("Drink a potion, you're at 12% HP.", &asked, &now));
-        assert!(!stale("Drink a potion.", &asked, &now));
-        assert!(!stale("MP 80%, fine.", &asked, &now));
-        assert!(!stale("Kill 12 more snails.", &asked, &now));
-        assert!(!stale("HP 12%!", &asked, &asked));
-    }
-
-    #[test]
-    fn a_bar_that_moved_since_he_asked_is_said_as_it_is_now() {
-        let asked = Facts {
-            hp: Some(34.0),
-            mp: Some(80.0),
-            ..Default::default()
-        };
-        let now = Facts {
-            hp: Some(43.2),
-            mp: Some(80.0),
-            ..Default::default()
-        };
-        assert_eq!(
-            freshen("Your HP is at 34%, drink a potion.", &asked, &now),
-            "Your HP is at 43%, drink a potion."
-        );
-        // MP did not move; a number that is not the bar's stays.
-        assert_eq!(
-            freshen("MP 80%, 3 snails left.", &asked, &now),
-            "MP 80%, 3 snails left."
-        );
-        assert_eq!(freshen("Kill 34 snails.", &asked, &now), "Kill 34 snails.");
-        assert_eq!(freshen("החיים שלך 34.0%.", &asked, &now), "החיים שלך 43%.");
-        // Unknown now: left as said.
-        assert_eq!(freshen("HP 34%", &asked, &Facts::default()), "HP 34%");
     }
 
     #[test]
@@ -5132,7 +5090,6 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWanBoggi".into()),
             job: Some("Night Lord".into()),
             bars: vec![],
-            ..Default::default()
         };
         let main = Facts {
             bars: vec![48.0, 90.0, 34.36],
@@ -5228,7 +5185,6 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWanBoggi".into()),
             job: Some("Night Lord".into()),
             bars: vec![48.0, 90.0, 34.36],
-            ..Default::default()
         };
         let closed = Facts {
             bars: vec![],
@@ -5240,7 +5196,6 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWan".into()),
             job: Some("Night Lord".into()),
             bars: vec![76.0, 22.0, 34.5],
-            ..Default::default()
         };
         let (nine, nine_low, ten, ten_low) =
             (at(9, 100.0), at(9, 48.0), at(10, 100.0), at(10, 48.0));
@@ -5582,7 +5537,6 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             name: Some("WanWanBoggi".into()),
             job: Some("Night Lord".into()),
             bars: vec![hp, 90.0, 34.36],
-            ..Default::default()
         }
     }
 

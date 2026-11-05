@@ -13,13 +13,21 @@
 //!   with it ([`Board::quit_requested`]).
 //! - `GET /local/status` — the reading now, as text and as fields, with the
 //!   last few events.
-//! - `POST /local/say` `{"text": …}` — a line for MapleSyrup's voice.
+//! - `POST /local/say` `{"text": …, "answers": N}` — a line for MapleSyrup's
+//!   voice; `answers`, the number of the player's words it answers (their
+//!   `heard` event's). He comes first: a line for words he has followed
+//!   with newer ones, or written before Claude could read his newest, or
+//!   coming while he talked over Claude's voice, is not said (409, and
+//!   why: Claude answers the newest instead).
 //! - `GET /local/look?region=…` — the screen (or part of it) as a JPEG,
-//!   while the game is the window in front.
+//!   while the game is in view.
 //! - `GET /local/wiki?q=…` / `POST /local/wiki` `{"about", "answer",
 //!   "source"}` — the local MapleStory wiki: what MapleSyrup knows about the
 //!   game (looked up, or the player's corrections; `knowledge.json`), and a
 //!   fact added to it.
+//! - `POST /local/tone` `{"tone"}` — the bar of how it talks to him moved
+//!   to a level (a level's name in `spectrum.json`), as on his phone: he
+//!   asked Claude to talk another way ([`Board::take_tone`]).
 //! - `GET /local/player` / `POST /local/player` `{"fact"}` — what MapleSyrup
 //!   knows about the player and his game (his own file, `about-me.txt`, and
 //!   its notebook), and a fact added to his file.
@@ -37,6 +45,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::phone::http::{Request, Response};
+use crate::util::latency::{self, Key, Stage};
 
 /// Events kept for a bridge that polls late.
 const KEEP: usize = 200;
@@ -49,8 +58,47 @@ const MAX_WAIT: Duration = Duration::from_secs(25);
 const CONNECTED_FOR: Duration = Duration::from_secs(45);
 /// The longest line Claude can have said at once.
 const MAX_SAY: usize = 800;
+/// A line that names no words of his it answers, coming this soon after
+/// his newest words were handed to Claude (or posted, when no bridge took
+/// them), was written before Claude could have read them: Claude takes
+/// longer than this to read a message and answer it.
+const SAY_GRACE: Duration = Duration::from_millis(1000);
+/// How long after he talked over Claude's voice Claude's lines wait for
+/// what he says (it comes as `heard`), when nothing comes.
+const TALKED_OVER_WAIT: Duration = Duration::from_secs(6);
 /// A picture's longest side by default: what Claude takes in whole.
 const LOOK_SIZE: u32 = 1568;
+/// How long his words wait for Claude's answer before MapleSyrup's own
+/// brain answers them (the safety net; the brief tells Claude so). On 25.10
+/// Claude answered in 2 s at the median and within 6 s nine times in ten,
+/// but a turn of its own can wait much longer — behind a game event, a
+/// permission prompt in its window, the conversation being compacted — and
+/// the player only hears silence.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(6);
+/// The kind of the event that hands Claude a question to think through for
+/// MapleSyrup's voice ([`Board::ask`]); Claude gives its number back as
+/// `say`'s `answers`.
+pub const QUESTION: &str = "question";
+/// The events that still go to Claude while it is only the thinker
+/// ([`Board::set_thinker_only`]: MapleSyrup's voice is a live call that
+/// answers him itself): the questions it hands over, and the link coming
+/// and going.
+const THINKER_KINDS: &[&str] = &[QUESTION, "hello", "offline"];
+/// The most questions kept for their answers.
+const QUESTIONS_KEPT: usize = 16;
+/// The requests that are Claude's tools (the bridge makes one for each),
+/// by method and path, with the tool's name: timed for the words of his
+/// Claude is answering ([`latency`]).
+const TOOLS: &[(&str, &str, &str)] = &[
+    ("GET", "/local/status", "game_status"),
+    ("GET", "/local/look", "look_at_screen"),
+    ("GET", "/local/picture", "save_picture"),
+    ("GET", "/local/wiki", "maple_wiki_search"),
+    ("POST", "/local/wiki", "maple_wiki_save"),
+    ("GET", "/local/player", "player_profile"),
+    ("POST", "/local/player", "player_remember"),
+    ("POST", "/local/tone", "set_tone"),
+];
 
 /// One event as posted.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -76,6 +124,92 @@ struct Inner {
     quit: bool,
     says: Vec<String>,
     frame: Option<Arc<RgbaImage>>,
+    /// His newest words (`heard`): their event, and when the bridge took
+    /// them (None: not yet).
+    newest: Option<Newest>,
+    /// When he last talked over Claude's voice and stopped it, until his
+    /// words come.
+    talked_over: Option<Instant>,
+    /// Lines of Claude's that were not said (he had moved on), for the
+    /// log.
+    refused: Vec<String>,
+    /// Where Claude moved the bar of how it talks to him, for the main
+    /// loop to take.
+    tone: Option<String>,
+    /// The game as it was when the last event went to Claude: a line of
+    /// its own written about it is not said once that has changed
+    /// ([`Basis`]).
+    last_event: Option<Basis>,
+    /// The questions handed to Claude to think through, oldest first, with
+    /// the answer once it came ([`Board::ask`]).
+    questions: VecDeque<Question>,
+    /// Claude is only the thinker: MapleSyrup's voice (a live call) answers
+    /// him itself ([`Board::set_thinker_only`]).
+    thinker_only: bool,
+}
+
+/// A question handed to Claude to think through.
+struct Question {
+    seq: u64,
+    /// Claude's answer (empty: it had none).
+    answer: Option<String>,
+    /// Nobody waits for it any more (it came too late): a late answer is
+    /// refused.
+    given_up: bool,
+}
+
+/// What a line about a game event takes as still so when it is said: the
+/// character alive or dead, and the map. (On 25.10 "you died, click Revive"
+/// came after the tester was up and playing again.)
+#[derive(Debug, Clone, PartialEq)]
+struct Basis {
+    dead: Option<bool>,
+    map: Option<String>,
+}
+
+impl Basis {
+    /// The game as the reading `status` (the scene) has it.
+    fn of(status: &Value) -> Basis {
+        Basis {
+            dead: status["dead"].as_bool(),
+            map: status["map"].as_str().map(str::to_string),
+        }
+    }
+
+    /// What changed from `self` to `now`, in words for Claude (None:
+    /// nothing a line could have been about). An unknown side is no
+    /// change.
+    fn changed(&self, now: &Basis) -> Option<String> {
+        if let (Some(then), Some(dead)) = (self.dead, now.dead)
+            && then != dead
+        {
+            return Some(if dead {
+                "he died since".into()
+            } else {
+                "he is alive again since".into()
+            });
+        }
+        if let (Some(then), Some(map)) = (&self.map, &now.map)
+            && then != map
+        {
+            return Some(format!("he is on another map since ({map})"));
+        }
+        None
+    }
+}
+
+/// The player's newest words posted for Claude.
+struct Newest {
+    seq: u64,
+    headline: String,
+    posted: Instant,
+    taken: Option<Instant>,
+    /// A line of Claude's was said after them: he has been answered.
+    answered: bool,
+    /// Claude did not answer in time and MapleSyrup's own brain answered
+    /// them ([`Board::answered_here`]): a line of Claude's for them is not
+    /// said any more.
+    ours: bool,
 }
 
 pub struct Board {
@@ -111,6 +245,13 @@ impl Board {
                 quit: false,
                 says: Vec::new(),
                 frame: None,
+                last_event: None,
+                questions: VecDeque::new(),
+                thinker_only: false,
+                newest: None,
+                talked_over: None,
+                refused: Vec::new(),
+                tone: None,
             }),
             changed: Condvar::new(),
         })
@@ -127,10 +268,89 @@ impl Board {
     /// Post an event: `headline` is what happened, `text` the whole of it
     /// (the headline and the reading). Returns its number.
     pub fn post(&self, kind: &str, headline: &str, text: String) -> u64 {
-        let t = self.started.elapsed().as_secs_f64();
         let mut inner = self.lock();
+        let seq = self.push(&mut inner, kind, headline, text);
+        drop(inner);
+        self.changed.notify_all();
+        seq
+    }
+
+    /// Hand Claude a question to think through for MapleSyrup's voice:
+    /// `headline` is the question, and the reading now goes with it. Its
+    /// number comes back as `say`'s `answers` ([`Board::answer`]).
+    pub fn ask(&self, headline: &str) -> u64 {
+        let mut inner = self.lock();
+        let text = format!("{headline}\n\n{}", inner.text);
+        let seq = self.push(&mut inner, QUESTION, headline, text);
+        inner.questions.push_back(Question {
+            seq,
+            answer: None,
+            given_up: false,
+        });
+        while inner.questions.len() > QUESTIONS_KEPT {
+            inner.questions.pop_front();
+        }
+        drop(inner);
+        self.changed.notify_all();
+        seq
+    }
+
+    /// Claude's answer to question `seq`, waiting `wait` at most. None: no
+    /// answer in time (nobody waits for it any more: a late one is
+    /// refused, with why), or no such question.
+    pub fn answer(&self, seq: u64, wait: Duration) -> Option<String> {
+        let deadline = Instant::now() + wait;
+        let mut inner = self.lock();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let question = inner.questions.iter_mut().find(|q| q.seq == seq)?;
+            if let Some(answer) = &question.answer {
+                return Some(answer.clone());
+            }
+            if left.is_zero() {
+                question.given_up = true;
+                return None;
+            }
+            inner = match self.changed.wait_timeout(inner, left) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+    }
+
+    /// Claude is only the thinker (`on`): MapleSyrup's voice is a live call
+    /// that answers him itself. Only the questions it hands over go to
+    /// Claude (and the link coming and going), and a line of Claude's that
+    /// answers none of them is refused, with why.
+    pub fn set_thinker_only(&self, on: bool) {
+        self.lock().thinker_only = on;
+    }
+
+    /// Post an event on the board held as `inner` (unless Claude is only
+    /// the thinker and it is not for the thinker). Returns its number.
+    fn push(&self, inner: &mut Inner, kind: &str, headline: &str, text: String) -> u64 {
+        let t = self.started.elapsed().as_secs_f64();
         let seq = inner.next;
         inner.next += 1;
+        if inner.thinker_only && !THINKER_KINDS.contains(&kind) {
+            return seq;
+        }
+        // His words: the newest Claude is to answer, and what he says after
+        // talking over Claude's voice has come.
+        if kind != "heard" && kind != QUESTION {
+            inner.last_event = Some(Basis::of(&inner.status));
+        }
+        if kind == "heard" {
+            inner.newest = Some(Newest {
+                seq,
+                headline: headline.to_string(),
+                posted: Instant::now(),
+                taken: None,
+                answered: false,
+                ours: false,
+            });
+            inner.talked_over = None;
+        }
         inner.events.push_back(Posted {
             seq,
             t,
@@ -141,8 +361,6 @@ impl Board {
         while inner.events.len() > KEEP {
             inner.events.pop_front();
         }
-        drop(inner);
-        self.changed.notify_all();
         seq
     }
 
@@ -153,7 +371,7 @@ impl Board {
         inner.text = text;
     }
 
-    /// The screen now (None while the game is not the window in front).
+    /// The screen now (None while the game is not in view).
     pub fn set_frame(&self, frame: Option<Arc<RgbaImage>>) {
         self.lock().frame = frame;
     }
@@ -196,9 +414,105 @@ impl Board {
         self.lock().quit
     }
 
+    /// Where Claude moved the bar of how it talks to him, once (the main
+    /// loop sets it as the phone's bar would).
+    pub fn take_tone(&self) -> Option<String> {
+        self.lock().tone.take()
+    }
+
     /// What Claude asked to have said since the last call.
     pub fn take_says(&self) -> Vec<String> {
         std::mem::take(&mut self.lock().says)
+    }
+
+    /// Since when his words number `seq` have waited for Claude's answer:
+    /// from when the bridge handed them to Claude (or were posted, when no
+    /// bridge took them). None once anything of Claude's was said after
+    /// them, once MapleSyrup answered them itself, or once newer words of
+    /// his came (those wait instead).
+    pub fn waiting_since(&self, seq: u64) -> Option<Instant> {
+        let inner = self.lock();
+        let newest = inner.newest.as_ref().filter(|n| n.seq == seq)?;
+        (!newest.answered && !newest.ours).then(|| newest.taken.unwrap_or(newest.posted))
+    }
+
+    /// Claude did not answer his words number `seq` in time, and
+    /// MapleSyrup's own brain answers them: a line of Claude's for them
+    /// is refused from now on, with why ([`Board::refusal`]).
+    pub fn answered_here(&self, seq: u64) {
+        if let Some(newest) = self.lock().newest.as_mut().filter(|n| n.seq == seq) {
+            newest.ours = true;
+        }
+    }
+
+    /// Lines Claude asked to have said that were not, since the last call:
+    /// he had moved on ([`Board::refusal`]).
+    pub fn take_refused(&self) -> Vec<String> {
+        std::mem::take(&mut self.lock().refused)
+    }
+
+    /// He talked over Claude's voice and stopped it: Claude's lines wait
+    /// for what he says ([`TALKED_OVER_WAIT`] at most), and he is answered.
+    pub fn talked_over(&self) {
+        self.lock().talked_over = Some(Instant::now());
+    }
+
+    /// Why a line of Claude's that answers his words number `answers` (or
+    /// names none) is not to be said now: he talked over Claude's voice
+    /// and has not said what he wants yet; or he has said something newer
+    /// than what it answers; or it names nothing and came too soon after
+    /// his newest words to be about them ([`SAY_GRACE`]). None: it is said.
+    fn refusal(inner: &Inner, answers: Option<u64>, now: Instant) -> Option<String> {
+        if inner.thinker_only {
+            return Some(format!(
+                "MapleSyrup's voice is a live call that talks with him itself: you are its thinker. Answer only \
+the questions it hands you (kind {QUESTION}), giving their question_id as answers; don't speak on your own"
+            ));
+        }
+        if inner
+            .talked_over
+            .is_some_and(|at| now.saturating_duration_since(at) < TALKED_OVER_WAIT)
+        {
+            return Some(
+                "he talked over you just now and MapleSyrup stopped your voice: wait for what he says \
+(it comes as heard) and answer that"
+                    .into(),
+            );
+        }
+        // A line of its own (about the last event) written before the game
+        // changed: what it says is no longer so.
+        if answers.is_none()
+            && let Some(changed) = inner
+                .last_event
+                .as_ref()
+                .and_then(|then| then.changed(&Basis::of(&inner.status)))
+        {
+            return Some(format!(
+                "the game changed after the event you're speaking of — {changed}: what you wrote is no longer so; \
+say nothing about it"
+            ));
+        }
+        let newest = inner.newest.as_ref()?;
+        if newest.ours && answers == Some(newest.seq) {
+            return Some(format!(
+                "you took too long, so MapleSyrup answered him itself: {} (heard_id {}) is answered — \
+don't answer it again; answer what he says next",
+                newest.headline, newest.seq
+            ));
+        }
+        let older = match answers {
+            Some(answers) => answers < newest.seq,
+            None => {
+                now.saturating_duration_since(newest.taken.unwrap_or(newest.posted)) < SAY_GRACE
+            }
+        };
+        older.then(|| {
+            format!(
+                "he said something newer: {} (heard_id {}). Answer that instead — with answers={} — \
+or say nothing",
+                newest.headline, newest.seq, newest.seq
+            )
+        })
     }
 
     /// Answer a request under `/local/`.
@@ -222,7 +536,8 @@ impl Board {
         if !matches!(request.path.as_str(), "/local/hello" | "/local/quit") {
             self.lock().bridge_seen = Some(Instant::now());
         }
-        match (request.method.as_str(), request.path.as_str()) {
+        let began = Instant::now();
+        let response = match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/local/hello") => {
                 Response::json(200, &json!({"ok": true, "pid": std::process::id()}))
             }
@@ -235,12 +550,56 @@ impl Board {
             ("POST", "/local/say") => {
                 let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
                 let text = body["text"].as_str().map(str::trim).unwrap_or_default();
+                // (A number, or a number in a string: as Claude wrote it.)
+                let answers = body["answers"]
+                    .as_u64()
+                    .or_else(|| body["answers"].as_str().and_then(|s| s.trim().parse().ok()));
+                // The answer to a question MapleSyrup's voice handed over:
+                // for the voice to say, not for MapleSyrup's own.
+                if let Some(answers) = answers
+                    && let Some(response) = self.answered(answers, text)
+                {
+                    return response;
+                }
                 if text.is_empty() {
-                    return Response::json(400, &json!({"error": "nothing to say"}));
+                    // Quiet on purpose about his words (he asked for quiet,
+                    // or he talked to someone else): they are answered, and
+                    // MapleSyrup does not answer them either.
+                    let mut inner = self.lock();
+                    inner.bridge_seen = Some(Instant::now());
+                    return match (answers, inner.newest.as_mut()) {
+                        (Some(answers), Some(newest)) if answers == newest.seq => {
+                            newest.answered = true;
+                            latency::TRACER.ended(Key::Heard(answers), latency::End::Silent);
+                            Response::json(200, &json!({"ok": true, "quiet": true}))
+                        }
+                        (Some(_), _) => Response::json(200, &json!({"ok": true, "quiet": true})),
+                        (None, _) => Response::json(400, &json!({"error": "nothing to say"})),
+                    };
                 }
                 let text: String = text.chars().take(MAX_SAY).collect();
                 let mut inner = self.lock();
                 inner.bridge_seen = Some(Instant::now());
+                // (Timed for the words it answers: those it names, else his
+                // newest.)
+                let answering = answers.or(inner.newest.as_ref().map(|n| n.seq));
+                if let Some(why) = Self::refusal(&inner, answers, Instant::now()) {
+                    inner.refused.push(text);
+                    if let Some(heard) = answering {
+                        latency::TRACER.refused(heard);
+                    }
+                    return Response::json(409, &json!({"error": why}));
+                }
+                // (Said after his newest words reached Claude: he has his
+                // answer, whatever it names.)
+                if let Some(newest) = inner.newest.as_mut()
+                    && answers.is_none_or(|answers| answers == newest.seq)
+                {
+                    newest.answered = true;
+                }
+                if let Some(heard) = answering {
+                    latency::TRACER.say(heard, &text);
+                }
                 inner.says.push(text);
                 Response::json(200, &json!({"ok": true}))
             }
@@ -260,7 +619,72 @@ impl Board {
                 let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
                 self.remember(body["fact"].as_str().unwrap_or_default())
             }
+            ("POST", "/local/tone") => {
+                let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
+                let spectrum = crate::companion::spectrum::Spectrum::get();
+                let open = self.learning().is_some_and(|l| l.memory().unlocked);
+                match body["tone"].as_str().and_then(|id| spectrum.index(id)) {
+                    Some(at) if spectrum.level(at).locked && !open => {
+                        Response::json(403, &json!({"error": crate::ai::tools::LOCKED_LEVEL}))
+                    }
+                    Some(at) => {
+                        let id = spectrum.level(at).id.clone();
+                        self.lock().tone = Some(id.clone());
+                        Response::json(200, &json!({"ok": true, "tone": id}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": format!("the levels are {}", spectrum.ids().join(", "))}),
+                    ),
+                }
+            }
             _ => Response::json(404, &json!({"error": "not found"})),
+        };
+        if latency::TRACER.enabled() {
+            self.timed(request, began);
+        }
+        response
+    }
+
+    /// Claude's `say` gives `text` as the answer to number `seq`: the
+    /// response, when that is a question handed over ([`Board::ask`]).
+    fn answered(&self, seq: u64, text: &str) -> Option<Response> {
+        let mut inner = self.lock();
+        inner.bridge_seen = Some(Instant::now());
+        let question = inner.questions.iter_mut().find(|q| q.seq == seq)?;
+        let response = if question.given_up {
+            Response::json(
+                409,
+                &json!({"error": "too late: MapleSyrup's voice went on without your answer to that question; leave it"}),
+            )
+        } else if question.answer.is_some() {
+            Response::json(409, &json!({"error": "you answered that question already"}))
+        } else {
+            question.answer = Some(text.chars().take(MAX_SAY).collect());
+            Response::json(200, &json!({"ok": true, "answered": QUESTION}))
+        };
+        drop(inner);
+        self.changed.notify_all();
+        Some(response)
+    }
+
+    /// A tool of Claude's ([`TOOLS`]) ran from `began` to now: a stretch of
+    /// the turn of the words of his the bridge last took for Claude.
+    fn timed(&self, request: &Request, began: Instant) {
+        let Some((_, _, tool)) = TOOLS
+            .iter()
+            .find(|(method, path, _)| *method == request.method && *path == request.path)
+        else {
+            return;
+        };
+        let heard = self
+            .lock()
+            .newest
+            .as_ref()
+            .filter(|n| n.taken.is_some())
+            .map(|n| n.seq);
+        if let Some(heard) = heard {
+            latency::TRACER.span(Key::Heard(heard), tool, began, Instant::now());
         }
     }
 
@@ -280,7 +704,11 @@ impl Board {
             inner.listener_seen = Some(Instant::now());
         }
         if request.param("fresh").is_some() {
-            // A bridge that just came: from here on.
+            // A bridge that just came: from here on. (His words from before
+            // it are in the reading it starts with.)
+            if let Some(newest) = inner.newest.as_mut() {
+                newest.taken.get_or_insert_with(Instant::now);
+            }
             let last = inner.next - 1;
             return Response::json(200, &json!({"events": [], "last": last, "boot": self.boot}));
         }
@@ -300,6 +728,11 @@ impl Board {
         if listening {
             inner.listener_seen = Some(Instant::now());
         }
+        let waiting = inner
+            .newest
+            .as_ref()
+            .filter(|n| n.taken.is_none())
+            .map(|n| n.seq);
         let events: Vec<&Posted> = inner
             .events
             .iter()
@@ -307,10 +740,14 @@ impl Board {
             .take(PER_POLL)
             .collect();
         let last = events.last().map(|e| e.seq).unwrap_or(inner.next - 1);
-        Response::json(
-            200,
-            &json!({"events": events, "last": last, "boot": self.boot}),
-        )
+        let handed = waiting.is_some_and(|seq| events.iter().any(|e| e.seq == seq));
+        let answer = json!({"events": events, "last": last, "boot": self.boot});
+        // His newest words are on their way to Claude now.
+        if handed && let Some(newest) = inner.newest.as_mut() {
+            newest.taken = Some(Instant::now());
+            latency::TRACER.stamp(Key::Heard(newest.seq), Stage::Bridge);
+        }
+        Response::json(200, &answer)
     }
 
     /// What the local wiki has on `query`: the best few entries, the
@@ -364,7 +801,8 @@ impl Board {
     }
 
     /// What MapleSyrup knows about the player and his game: his own file,
-    /// its notebook, his character as read now.
+    /// its notebook, his character as read now, and how he set Claude to
+    /// talk to him (the bar on his phone).
     fn player(&self) -> Response {
         let character = {
             let inner = self.lock();
@@ -394,6 +832,11 @@ impl Board {
             text.push_str("MapleSyrup knows nothing else about him yet.");
         } else {
             text.push_str(&known);
+        }
+        if let Some(learning) = self.learning() {
+            let tone = super::tone(learning.memory().level());
+            text.push_str("\n\n");
+            text.push_str(&tone);
         }
         Response::json(200, &json!({"text": text}))
     }
@@ -460,7 +903,7 @@ impl Board {
         let Some(frame) = self.lock().frame.clone() else {
             return Response::json(
                 404,
-                &json!({"error": "MapleStory isn't the window in front, so there is no picture of it"}),
+                &json!({"error": "MapleStory isn't in view (closed, minimised, or behind a window where it can't be captured), so there is no picture of it"}),
             );
         };
         let name = request.param("region").unwrap_or("full");
@@ -504,7 +947,7 @@ impl Board {
         let Some(frame) = self.lock().frame.clone() else {
             return Response::json(
                 404,
-                &json!({"error": "MapleStory isn't the window in front, so there is no picture of it"}),
+                &json!({"error": "MapleStory isn't in view (closed, minimised, or behind a window where it can't be captured), so there is no picture of it"}),
             );
         };
         let name = request.param("region").unwrap_or("full");
@@ -611,6 +1054,119 @@ mod tests {
 
     fn json_of(response: &Response) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    fn say(board: &Board, body: Value) -> Response {
+        board.handle(&request(
+            "POST",
+            &format!("/local/say?k={KEY}"),
+            body.to_string().as_bytes(),
+            &[],
+        ))
+    }
+
+    #[test]
+    fn a_question_handed_over_is_answered_by_say_and_the_answer_goes_to_the_voice() {
+        let board = Board::new(KEY.into());
+        board.set_status(json!({}), "Level 27, EXP 41%".into());
+        let seq = board.ask("MapleSyrup's voice asks: how long to level 30?");
+        let events = json_of(&board.handle(&get(&format!("/local/events?k={KEY}&since=0"))));
+        let event = &events["events"][0];
+        assert_eq!(event["kind"], QUESTION);
+        // The question comes with the reading, like every event.
+        assert!(
+            event["text"]
+                .as_str()
+                .unwrap()
+                .ends_with("Level 27, EXP 41%")
+        );
+        let ok = say(
+            &board,
+            json!({"text": "About 50 minutes at this rate.", "answers": seq}),
+        );
+        assert_eq!(ok.status, 200, "{}", json_of(&ok));
+        assert_eq!(
+            board.answer(seq, Duration::ZERO).as_deref(),
+            Some("About 50 minutes at this rate.")
+        );
+        // Not for MapleSyrup's own voice: the call says it.
+        assert!(board.take_says().is_empty());
+        // Once only.
+        let again = say(&board, json!({"text": "Or 55.", "answers": seq}));
+        assert_eq!(again.status, 409);
+        assert!(
+            json_of(&again)["error"]
+                .as_str()
+                .unwrap()
+                .contains("already")
+        );
+    }
+
+    #[test]
+    fn the_voice_waits_for_claudes_answer_and_goes_on_without_one_that_is_too_late() {
+        let board = Board::new(KEY.into());
+        let seq = board.ask("MapleSyrup's voice asks: where do I train at 30?");
+        // An answer that comes while the voice waits is taken at once.
+        let answering = {
+            let board = Arc::clone(&board);
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                say(&board, json!({"text": "Ant Tunnel.", "answers": seq})).status
+            })
+        };
+        assert_eq!(
+            board.answer(seq, Duration::from_secs(5)).as_deref(),
+            Some("Ant Tunnel.")
+        );
+        assert_eq!(answering.join().unwrap(), 200);
+        // One that comes after the voice gave up is refused, with why.
+        let late = board.ask("MapleSyrup's voice asks: and at 40?");
+        assert_eq!(board.answer(late, Duration::from_millis(10)), None);
+        let refused = say(&board, json!({"text": "Sleepywood.", "answers": late}));
+        assert_eq!(refused.status, 409);
+        assert!(
+            json_of(&refused)["error"]
+                .as_str()
+                .unwrap()
+                .contains("too late")
+        );
+        // A question nobody asked is no question.
+        assert_eq!(board.answer(999, Duration::ZERO), None);
+    }
+
+    #[test]
+    fn while_claude_is_only_the_thinker_it_gets_the_questions_and_speaks_for_no_one() {
+        let board = Board::new(KEY.into());
+        board.set_thinker_only(true);
+        board.post("death", "The character died.", "…".into());
+        let seq = board.ask("MapleSyrup's voice asks: how many potions for Zakum?");
+        let events = json_of(&board.handle(&get(&format!("/local/events?k={KEY}&since=0"))));
+        let kinds: Vec<&str> = events["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, vec![QUESTION], "the game's events are the call's");
+        // A line of its own is refused, and says what Claude is for now.
+        let own = say(&board, json!({"text": "Ouch, you died."}));
+        assert_eq!(own.status, 409);
+        assert!(
+            json_of(&own)["error"]
+                .as_str()
+                .unwrap()
+                .contains("you are its thinker")
+        );
+        // Its answers still go through.
+        assert_eq!(
+            say(&board, json!({"text": "About 200.", "answers": seq})).status,
+            200
+        );
+        // And when the call is gone, Claude talks again.
+        board.set_thinker_only(false);
+        board.post("death", "The character died.", "…".into());
+        let after = json_of(&board.handle(&get(&format!("/local/events?k={KEY}&since={seq}"))));
+        assert_eq!(after["events"][0]["kind"], "death");
     }
 
     #[test]
@@ -735,6 +1291,209 @@ mod tests {
     }
 
     #[test]
+    fn a_line_for_words_he_has_moved_on_from_is_not_said() {
+        let board = Board::new(KEY.into());
+        let say = |body: Value| {
+            board.handle(&request(
+                "POST",
+                &format!("/local/say?k={KEY}"),
+                body.to_string().as_bytes(),
+                &[],
+            ))
+        };
+        let take = |since: u64| {
+            json_of(&board.handle(&get(&format!(
+                "/local/events?k={KEY}&since={since}&listen=1"
+            ))))
+        };
+        // He asks for a joke; the bridge takes it to Claude, which answers.
+        let joke = board.post("heard", "He said: \"tell me a joke\"", "…".into());
+        take(0);
+        assert_eq!(
+            say(json!({"text": "Why did the slime cross the road?", "answers": joke})).status,
+            200
+        );
+        // He asks something else before the rest of the joke.
+        let hp = board.post("heard", "He said: \"how much HP do I have\"", "…".into());
+        take(joke);
+        let late = say(json!({"text": "To get to Henesys!", "answers": joke}));
+        assert_eq!(late.status, 409, "the rest of the joke is no longer wanted");
+        let why = json_of(&late)["error"].as_str().unwrap().to_string();
+        assert!(
+            why.contains("how much HP do I have") && why.contains(&format!("heard_id {hp}")),
+            "{why}"
+        );
+        // A line naming nothing, the moment his words went to Claude, was
+        // written before Claude read them.
+        assert_eq!(say(json!({"text": "Nice level!"})).status, 409);
+        // The answer to his newest is said (a number in a string too); a
+        // line naming nothing too, once Claude had time to read them.
+        assert_eq!(
+            say(json!({"text": "62%.", "answers": hp.to_string()})).status,
+            200
+        );
+        board.lock().newest.as_mut().unwrap().taken = Instant::now().checked_sub(SAY_GRACE);
+        assert_eq!(say(json!({"text": "Nice level!"})).status, 200);
+        assert_eq!(
+            board.take_says(),
+            vec!["Why did the slime cross the road?", "62%.", "Nice level!"]
+        );
+        assert_eq!(
+            board.take_refused(),
+            vec!["To get to Henesys!", "Nice level!"]
+        );
+        // He talks over Claude's voice: its lines wait for what he says…
+        board.talked_over();
+        let waiting = say(json!({"text": "As I was saying…", "answers": hp}));
+        assert_eq!(waiting.status, 409);
+        assert!(
+            json_of(&waiting)["error"]
+                .as_str()
+                .unwrap()
+                .contains("talked over")
+        );
+        // …which comes, and is answered.
+        let what = board.post("heard", "He said: \"what was that\"", "…".into());
+        take(hp);
+        assert_eq!(
+            say(json!({"text": "A slime.", "answers": what})).status,
+            200
+        );
+        assert_eq!(board.take_says(), vec!["A slime."]);
+    }
+
+    #[test]
+    fn his_words_wait_for_claude_until_a_line_is_said_and_then_maplesyrup_may_answer_them() {
+        let board = Board::new(KEY.into());
+        let say = |body: Value| {
+            board.handle(&request(
+                "POST",
+                &format!("/local/say?k={KEY}"),
+                body.to_string().as_bytes(),
+                &[],
+            ))
+        };
+        // Posted: they wait, from when they were posted (no bridge took them).
+        let first = board.post("heard", "He said: \"where do I level\"", "…".into());
+        assert!(board.waiting_since(first).is_some());
+        // Claude's answer is said: they wait no more.
+        assert_eq!(
+            say(json!({"text": "Ant Tunnel.", "answers": first})).status,
+            200
+        );
+        assert_eq!(board.waiting_since(first), None);
+        // Quiet on purpose ("shut up", or words for someone else): answered,
+        // and nothing to say; without his words named, nothing to do.
+        let hush = board.post("heard", "He said: \"shut up\"", "…".into());
+        assert_eq!(say(json!({"text": "", "answers": hush})).status, 200);
+        assert_eq!(board.waiting_since(hush), None);
+        assert_eq!(say(json!({"text": "  "})).status, 400);
+        // Newer words take the place of older ones.
+        let second = board.post("heard", "He said: \"how much HP\"", "…".into());
+        let third = board.post("heard", "He said: \"how much HP do I have\"", "…".into());
+        assert_eq!(board.waiting_since(second), None);
+        assert!(board.waiting_since(third).is_some());
+        // Claude took too long: MapleSyrup answers them, and Claude's line
+        // for them is refused, with why; a line of its own still goes.
+        board.answered_here(third);
+        assert_eq!(board.waiting_since(third), None);
+        let late = say(json!({"text": "62%.", "answers": third}));
+        assert_eq!(late.status, 409);
+        assert!(
+            json_of(&late)["error"]
+                .as_str()
+                .unwrap()
+                .contains("MapleSyrup answered him itself")
+        );
+        board.lock().newest.as_mut().unwrap().taken = Instant::now().checked_sub(SAY_GRACE);
+        assert_eq!(say(json!({"text": "Nice level!"})).status, 200);
+        assert_eq!(board.take_says(), vec!["Ant Tunnel.", "Nice level!"]);
+    }
+
+    #[test]
+    fn a_line_of_its_own_about_an_event_is_not_said_once_the_game_changed() {
+        let board = Board::new(KEY.into());
+        let say = |body: Value| {
+            board.handle(&request(
+                "POST",
+                &format!("/local/say?k={KEY}"),
+                body.to_string().as_bytes(),
+                &[],
+            ))
+        };
+        board.set_status(
+            json!({"dead": true, "map": "Snail Hunting Ground I"}),
+            "…".into(),
+        );
+        board.post("death", "The character died.", "…".into());
+        // Still dead: said.
+        assert_eq!(say(json!({"text": "Ouch. Revive in town."})).status, 200);
+        // Up again before the line came: not said, and Claude is told why.
+        board.set_status(
+            json!({"dead": false, "map": "Snail Hunting Ground I"}),
+            "…".into(),
+        );
+        let late = say(json!({"text": "You died, click Revive in Town."}));
+        assert_eq!(late.status, 409);
+        assert!(
+            json_of(&late)["error"]
+                .as_str()
+                .unwrap()
+                .contains("alive again")
+        );
+        // A new map since the event, the same.
+        board.post("map", "New map: Henesys.", "…".into());
+        board.set_status(json!({"dead": false, "map": "Ellinia"}), "…".into());
+        assert_eq!(say(json!({"text": "Henesys has a shop."})).status, 409);
+        // An answer to his words is said whatever changed.
+        let hp = board.post("heard", "He said: \"how much HP\"", "…".into());
+        assert_eq!(say(json!({"text": "HP {hp}.", "answers": hp})).status, 200);
+        assert_eq!(board.take_says(), vec!["Ouch. Revive in town.", "HP {hp}."]);
+    }
+
+    #[test]
+    fn claude_moves_the_bar_to_a_level_it_has_for_the_main_loop_to_take() {
+        let board = Board::new(KEY.into());
+        let tone = |tone: &str| {
+            board.handle(&request(
+                "POST",
+                &format!("/local/tone?k={KEY}"),
+                json!({"tone": tone}).to_string().as_bytes(),
+                &[],
+            ))
+        };
+        let moved = tone(" Blunt ");
+        assert_eq!(moved.status, 200);
+        assert_eq!(json_of(&moved)["tone"], "blunt");
+        assert_eq!(board.take_tone().as_deref(), Some("blunt"));
+        assert_eq!(board.take_tone(), None);
+        // Past the open levels, only once his password opened them.
+        let shut = tone("unhinged");
+        assert_eq!(shut.status, 403);
+        assert_eq!(json_of(&shut)["error"], crate::ai::tools::LOCKED_LEVEL);
+        assert_eq!(board.take_tone(), None);
+        let dir = std::env::temp_dir().join(format!("ms-board-lock-{}", std::process::id()));
+        let learning = crate::ai::Learning::load(&dir);
+        board.set_learning(learning.clone());
+        assert_eq!(tone("unhinged").status, 403);
+        learning.memory().unlock("wild horses");
+        let opened = tone(" Unhinged ");
+        assert_eq!(opened.status, 200);
+        assert_eq!(board.take_tone().as_deref(), Some("unhinged"));
+        let _ = std::fs::remove_dir_all(dir);
+        // A level it doesn't have: refused, with the ones it has.
+        let refused = tone("wild");
+        assert_eq!(refused.status, 400);
+        assert!(
+            json_of(&refused)["error"]
+                .as_str()
+                .unwrap()
+                .contains("kids, friendly, blunt, savage, unhinged")
+        );
+        assert_eq!(board.take_tone(), None);
+    }
+
+    #[test]
     fn look_gives_the_screen_or_part_of_it_while_the_game_is_in_front() {
         let board = Board::new(KEY.into());
         assert_eq!(
@@ -856,6 +1615,9 @@ mod tests {
             text.contains("Wants to reach level 30 this week."),
             "{text}"
         );
+        // And how he set it to talk to him: the level the bar is at.
+        let level = crate::companion::spectrum::Spectrum::get().of_voice(Default::default());
+        assert!(text.ends_with(&crate::claude::tone(level)), "{text}");
         let file = std::fs::read_to_string(dir.join("about-me.txt")).unwrap();
         assert_eq!(file.matches("level 30").count(), 1, "{file}");
         let _ = std::fs::remove_dir_all(&dir);

@@ -1,0 +1,26 @@
+{
+  "_about": "How much MapleSyrup speaks up on its own, and when. The levels are the player's dial (quiet, normal, talkative); the rest is the director's pacing. Inner Thoughts (CHI 2025): the moderately proactive setting won with players, the quiet one was rated worst, the chatty one ignored natural pauses. The thresholds are on a 1–5 scale of how much a thought wants to be said; the gaps are seconds.",
+  "default": "normal",
+  "levels": [
+    { "id": "quiet", "threshold": 4.3, "gap_factor": 2.2, "at_most_per_window": 1 },
+    { "id": "normal", "threshold": 3.3, "gap_factor": 1.0, "at_most_per_window": 3 },
+    { "id": "talkative", "threshold": 2.6, "gap_factor": 0.6, "at_most_per_window": 5 }
+  ],
+  "pacing": {
+    "cap_window_s": 600.0,
+    "min_gap_after_anyone_spoke_s": 20.0,
+    "min_gap_between_own_thoughts_s": 75.0,
+    "settle_in_s": 12.0,
+    "silence_boost_per_s": 1.003,
+    "silence_boost_at_most": 1.6,
+    "spoken_topic_floor": 0.35,
+    "boundary_window_s": 10.0,
+    "boundary_bonus": 0.7,
+    "tempo_penalty": { "calm": 0.0, "travel": 0.6, "combat": 9.0, "peak": 9.0, "away": 9.0 },
+    "response_window_s": 12.0,
+    "ignored_backoff_factor": 1.5,
+    "ignored_backoff_at_most": 4.0,
+    "thought_ttl_s": 420.0,
+    "think_every_at_least_s": 25.0
+  }
+}

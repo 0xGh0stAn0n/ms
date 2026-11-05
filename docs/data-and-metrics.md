@@ -46,7 +46,8 @@ works out while it runs: aggregates and game facts only.
 | `sentences`, `replies`, `reply_ms_median`, `instant_answers` | how many sentences the player said (never what), replies heard and the median time to their first words, answers given without a model | conversation quality and speed |
 | `call_minutes`, `clip_minutes` | minutes on a live call; minutes with the phone connected without one | which mode people use (and its cost) |
 | `coach_looks`, `coach_lines` | the coach's looks at the game and the lines it said | coaching quality and cost |
-| `attitude` | friendly, blunt or savage | which tone people pick |
+| `thoughts` (`spoken`, `engaged`, `ignored`, `rejected`), `initiative` | its thoughts of its own: said, answered within the window, let pass, shushed; and the player's dial for them (`quiet`, `normal`, `talkative`; none when they were off) — counts and a setting, never the thoughts | is it good company or a nag (the design is tuned by this ratio) |
+| `attitude` | the voice of its own lines at the level it talked at: friendly, blunt or savage (the kids level speaks friendly, unhinged savage) | which tone people pick |
 | `language` | the phone's language, without the region (`he`, not `he-IL`) | which languages to support |
 | `version`, `commit` | the app's version and build | what breaks where |
 | `windows`, `screen` | Windows major version (`10`, `11`); the screen's size class (`1080p`, `1440p`, `4K`…) | what to test on |
@@ -158,7 +159,8 @@ from the closed list, or `other`), `hud`, `deaths`, `warnings`
 `screen`, `ai_errors`, `voice_errors`.
 
 Kept off the export even though the record has them: the day, the exact levels, the maps' names,
-the session id and the commit.
+the session id and the commit — and, until the owner decides otherwise, the thoughts' counts and
+the dial.
 
 ## Aggregation before any sale
 

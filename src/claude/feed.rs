@@ -15,12 +15,12 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Window {
-    /// Open and read every frame: its own frames (Windows.Graphics.Capture)
-    /// or the game has the focus.
+    /// Open and in view: read every frame. In front, or behind another
+    /// window while the capture gets the game as it is drawn (the
+    /// compositor's frames, which the window over it is not in).
     InFront,
-    /// Open, another window has the focus and the frames are a copy of the
-    /// screen: not looked at (a window over the game would be read
-    /// instead). It need not be hidden.
+    /// Open, behind another window, on a capture that copies the screen:
+    /// not looked at (the window over it would be read instead).
     Behind,
     NotOpen,
     /// There, but it could not be captured (minimised…).
@@ -176,7 +176,7 @@ impl Scene {
         lines.push(match self.window {
             Window::InFront => format!("Now {}: {game} is open and in view.", self.clock),
             Window::Behind => format!(
-                "Now {}: {game} is open but another window has the focus, so the screen isn't being read.",
+                "Now {}: {game} is open but behind another window, so the screen isn't being read.",
                 self.clock
             ),
             Window::NotOpen => format!("Now {}: no MapleStory window is open.", self.clock),
@@ -490,7 +490,7 @@ impl Feed {
                         }
                         Window::InFront => "MapleStory is open and in view: reading the screen.",
                         Window::Behind => {
-                            "Another window has the focus: the screen isn't read until MapleStory has it again."
+                            "MapleStory went behind another window: the screen isn't read until it's back in front."
                         }
                         Window::NotOpen => "MapleStory was closed.",
                         Window::Unavailable => "MapleStory can't be captured right now.",

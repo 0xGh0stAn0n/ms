@@ -43,7 +43,8 @@ pub struct Glance<'a> {
     pub now: f64,
     pub obs: &'a Observation,
     pub scene: Option<&'a scene::Verdict>,
-    /// The game is the window in front: what is captured is the game.
+    /// The game is in view: what is captured is the game (in front, or
+    /// behind another window on the compositor's frames).
     pub in_view: bool,
     /// Someone is talking: the player, or MapleSyrup (a reply being made
     /// or said).
@@ -609,6 +610,12 @@ enum Scare {
 pub struct Coach {
     /// Coaching is on: it may speak up on its own.
     pub on: bool,
+    /// The looks at nothing in particular are on (a switch for whoever
+    /// wants the coach's reasons without them; the intuition
+    /// ([`crate::intuition`]) leaves them on and keeps its own gaps from
+    /// the coach's lines). The reasons (a close call, a streak, a new
+    /// scene, a level-up, a stall) are not held by it.
+    looks: bool,
     /// When anyone last said anything.
     quiet_since: f64,
     last_consult: f64,
@@ -665,6 +672,7 @@ impl Coach {
     pub fn new(on: bool) -> Self {
         Self {
             on,
+            looks: true,
             quiet_since: f64::NEG_INFINITY,
             last_consult: f64::NEG_INFINITY,
             last_new_scene: f64::NEG_INFINITY,
@@ -815,7 +823,12 @@ impl Coach {
         // A look at nothing in particular: put off by as long as anyone
         // talked lately (see TALK_WINDOW).
         let wait = self.look_every + self.talked_lately();
-        if quiet && !g.held && now - self.last_consult >= wait && self.activity > IDLE_ACTIVITY {
+        if self.looks
+            && quiet
+            && !g.held
+            && now - self.last_consult >= wait
+            && self.activity > IDLE_ACTIVITY
+        {
             return Some(self.consult(Reason::Look, now));
         }
         None
@@ -1001,6 +1014,12 @@ impl Coach {
     /// Whether a consult is under way.
     pub fn consulting(&self) -> bool {
         self.consulting
+    }
+
+    /// Whether the looks at nothing in particular are on (see
+    /// [`Coach::looks`]).
+    pub fn set_looks(&mut self, looks: bool) {
+        self.looks = looks;
     }
 
     /// Turn coaching on or off (off drops what was waiting).

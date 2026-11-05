@@ -1,0 +1,514 @@
+{
+  "_about": "What MapleSyrup may have a thought about, as rules over what the vision engine reads (Ruskin, GDC 2012: facts, criteria, the most specific rule wins). A hook names the moment ('when'), where it applies ('where'), the facts it may lean on and the notes behind them. No sentence here is ever said: the mind phrases a hook in its own words, in the player's language. Every fact names its source; a fact without one does not go in. Composers are never named: no per-track credit was found.",
+  "topics": [
+    { "id": "music", "cooldown_s": 540 },
+    { "id": "place", "cooldown_s": 420 },
+    { "id": "route", "cooldown_s": 300 },
+    { "id": "plan", "cooldown_s": 240 },
+    { "id": "mood", "cooldown_s": 360 },
+    { "id": "callback", "cooldown_s": 900 }
+  ],
+  "hooks": [
+    {
+      "id": "lith-harbor-arrival",
+      "when": "map_entered",
+      "where": { "maps": ["Lith Harbor"], "tempo_at_most": "travel" },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 5,
+      "odds": 0.6,
+      "once_per_session": true,
+      "facts": { "bgm": "Above The Treetops", "place_kind": "town" },
+      "notes": [
+        "Lith Harbor is the first town new characters reach on Victoria Island; its theme is often the first the player ever heard."
+      ],
+      "sources": [
+        "https://vgmdb.net/album/115091",
+        "https://tvtropes.org/pmwiki/pmwiki.php/AwesomeMusic/MapleStory"
+      ],
+      "hum": "harbor-swing"
+    },
+    {
+      "id": "henesys-music",
+      "when": "map_entered",
+      "where": { "maps": ["Henesys"], "tempo_at_most": "travel" },
+      "topic": "music",
+      "kind": "opinion",
+      "interest": 6,
+      "odds": 0.7,
+      "once_per_session": true,
+      "facts": { "bgm": "Floral Life", "place_kind": "town", "mood": ["bright", "village", "flowers"] },
+      "notes": ["Henesys's theme on the official 18th-anniversary soundtrack is \"Floral Life\"."],
+      "sources": ["https://vgmdb.net/album/115091"],
+      "hum": "pancake-hat"
+    },
+    {
+      "id": "henesys-hunting-ground-music",
+      "when": "map_entered",
+      "where": {
+        "maps": ["Henesys Hunting Ground I", "Henesys Hunting Ground II", "Henesys Hunting Ground III"],
+        "tempo_at_most": "travel"
+      },
+      "topic": "music",
+      "kind": "opinion",
+      "interest": 6,
+      "odds": 0.6,
+      "once_per_session": true,
+      "facts": { "bgm": "Cava Bien", "place_kind": "field", "mood": ["breezy", "playful"] },
+      "notes": ["The hunting grounds east of Henesys share one theme, \"Cava Bien\"."],
+      "sources": ["https://meowdb.com/msclassic"]
+    },
+    {
+      "id": "ellinia-music",
+      "when": "map_entered",
+      "where": { "maps": ["Ellinia"], "tempo_at_most": "travel" },
+      "topic": "music",
+      "kind": "opinion",
+      "interest": 8,
+      "odds": 0.9,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "When The Morning Comes",
+        "place_kind": "town",
+        "mood": ["forest", "morning", "gentle"],
+        "instrument_hook": "piano"
+      },
+      "notes": [
+        "Ellinia's theme is among the most loved in the game; piano arrangements of it are praised as equal to or better than the original.",
+        "The 2017 Budapest symphony album opens with it."
+      ],
+      "sources": [
+        "https://vgmdb.net/album/115091",
+        "https://tvtropes.org/pmwiki/pmwiki.php/AwesomeMusic/MapleStory",
+        "https://vgmdb.net/album/64888"
+      ],
+      "hum": "morning-leaf"
+    },
+    {
+      "id": "kerning-city-arrival",
+      "when": "map_entered",
+      "where": { "maps": ["Kerning City"], "tempo_at_most": "travel" },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 6,
+      "odds": 0.7,
+      "once_per_session": true,
+      "facts": { "bgm": "Bad Guys", "place_kind": "town", "mood": ["night", "city", "sewers"] },
+      "notes": ["Kerning City is the thieves' town; its theme is \"Bad Guys\"."],
+      "sources": ["https://vgmdb.net/album/115091"]
+    },
+    {
+      "id": "kerning-pq-suggestion",
+      "when": "level_up",
+      "where": { "level_min": 21, "level_max": 30, "world": "classic", "tempo_at_most": "travel" },
+      "topic": "plan",
+      "kind": "suggestion",
+      "interest": 8,
+      "odds": 1.0,
+      "once_per_session": true,
+      "facts": {
+        "party_quest": "Kerning City Party Quest",
+        "level_min": 21,
+        "party_size": 4,
+        "time_limit_min": 30,
+        "boss": "King Slime",
+        "reward": "Squishy Shoes (a chance drop)",
+        "npc": "Lakelis"
+      },
+      "notes": [
+        "In Classic World the Kerning City PQ opens at level 21, takes exactly four players, lasts up to 30 minutes and ends at King Slime; the Squishy Shoes are a chance drop.",
+        "How many levels it is worth depends on the player's level: never promise a number."
+      ],
+      "sources": ["https://meowdb.com/msclassic/guides/kerning-city-party-quest-kpq-guide"]
+    },
+    {
+      "id": "perion-music",
+      "when": "map_entered",
+      "where": { "maps": ["Perion"], "tempo_at_most": "travel" },
+      "topic": "music",
+      "kind": "opinion",
+      "interest": 5,
+      "odds": 0.6,
+      "once_per_session": true,
+      "facts": { "bgm": "Nightmare", "place_kind": "town", "mood": ["rocky", "warriors", "wind"] },
+      "notes": ["Perion's theme is \"Nightmare\"."],
+      "sources": ["https://meowdb.com/msclassic"]
+    },
+    {
+      "id": "sleepywood-music",
+      "when": "map_entered",
+      "where": { "maps": ["Sleepywood"], "tempo_at_most": "travel" },
+      "topic": "music",
+      "kind": "opinion",
+      "interest": 6,
+      "odds": 0.7,
+      "once_per_session": true,
+      "facts": { "bgm": "Sleepy Wood", "place_kind": "town", "mood": ["mellow", "dusk", "quiet"] },
+      "notes": ["Sleepywood's mellow theme is credited with making the jump quests there bearable."],
+      "sources": [
+        "https://vgmdb.net/album/115091",
+        "https://tvtropes.org/pmwiki/pmwiki.php/AwesomeMusic/MapleStory"
+      ]
+    },
+    {
+      "id": "orbis-music",
+      "when": "map_entered",
+      "where": { "maps": ["Orbis"], "tempo_at_most": "travel" },
+      "topic": "music",
+      "kind": "opinion",
+      "interest": 7,
+      "odds": 0.8,
+      "once_per_session": true,
+      "facts": { "bgm": "Shinin' Harbor", "place_kind": "town", "mood": ["sky", "wind", "harbor"] },
+      "notes": ["Orbis's theme is \"Shinin' Harbor\"; the ship ride to Ludibrium plays a remix of it."],
+      "sources": [
+        "https://vgmdb.net/album/115091",
+        "https://tvtropes.org/pmwiki/pmwiki.php/AwesomeMusic/MapleStory"
+      ]
+    },
+    {
+      "id": "town-breather",
+      "when": "calm_stretch",
+      "where": { "tempo_at_most": "calm", "calm_for_s": 150, "session_at_least_s": 600 },
+      "topic": "mood",
+      "kind": "quip",
+      "interest": 3,
+      "odds": 0.35,
+      "once_per_session": false,
+      "facts": {},
+      "notes": [
+        "A long lull in town or a menu: a word of company, never a question about whether they are there."
+      ],
+      "sources": []
+    },
+    {
+      "id": "what-next",
+      "when": "calm_stretch",
+      "where": { "tempo_at_most": "calm", "calm_for_s": 240, "session_at_least_s": 300 },
+      "topic": "plan",
+      "kind": "suggestion",
+      "interest": 5,
+      "odds": 0.5,
+      "once_per_session": false,
+      "facts": {},
+      "notes": [
+        "Nothing has moved for minutes: the one thing worth doing next, from the standing plan, as a friend would put it — in first person plural."
+      ],
+      "sources": []
+    },
+    {
+      "id": "back-from-away",
+      "when": "player_back",
+      "where": { "tempo_at_most": "travel" },
+      "topic": "mood",
+      "kind": "quip",
+      "interest": 4,
+      "odds": 0.6,
+      "once_per_session": false,
+      "facts": {},
+      "notes": [
+        "They spoke after a long quiet: a short, warm word — never a question about where they were."
+      ],
+      "sources": []
+    },
+    {
+      "id": "el-nath-music",
+      "when": "map_entered",
+      "where": { "maps": ["El Nath"], "tempo_at_most": "travel" },
+      "topic": "music",
+      "kind": "opinion",
+      "interest": 7,
+      "odds": 0.7,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Snowy Village",
+        "place_kind": "town",
+        "mood": ["snow", "adventure", "cold"],
+        "length": "2:35"
+      },
+      "notes": [
+        "El Nath's theme is described as celebrating adventure amid snowfields. Nothing about who wrote it."
+      ],
+      "sources": ["https://meowdb.com/msclassic/music"],
+      "hum": "snowfall"
+    },
+    {
+      "id": "airship-ride",
+      "when": "map_entered",
+      "where": {
+        "maps": ["Cabin <To Orbis>", "To Orbis", "Cabin <To Ellinia>", "To Ellinia"],
+        "tempo_at_most": "travel"
+      },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 7,
+      "odds": 0.8,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Upon The Sky",
+        "place_kind": "the ship between Ellinia and Orbis, during the ride",
+        "length": "3:00"
+      },
+      "notes": [
+        "A ride is minutes of nothing to do: a good moment for a word, never for a lecture. The tune on board is 'Upon The Sky'.",
+        "Say nothing about what may board the ship: no fact here says."
+      ],
+      "sources": ["https://meowdb.com/msclassic/music"]
+    },
+    {
+      "id": "kerning-subway",
+      "when": "map_entered",
+      "where": {
+        "maps": [
+          "Line 1 <Area 1>",
+          "Line 1 <Area 2>",
+          "Line 1 <Area 3>",
+          "Line 1 <Area 4>",
+          "Line 2 <Area 1>",
+          "Line 2 <Area 2>",
+          "Line 2 <Area 3>",
+          "Transfer Area",
+          "Subway Ticketing Booth"
+        ],
+        "world": "classic",
+        "tempo_at_most": "travel"
+      },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 6,
+      "odds": 0.6,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Subway",
+        "length": "3:19",
+        "place_kind": "the Kerning City subway",
+        "monsters": {
+          "Line 1 <Area 1>": "Bubbling (level 15)",
+          "Transfer Area": "Stirge (level 20)",
+          "Line 1 <Area 2> and Line 2 <Area 1>": "Jr. Wraith (level 34)",
+          "Line 1 <Area 4>, Line 2 <Area 2> and <Area 3>": "Wraith (level 48)"
+        },
+        "good_for_levels": "11–15 at Area 1, 31–35 with Jr. Wraiths, 46–50 with Wraiths"
+      },
+      "notes": [
+        "The guide's picks for Classic World, by the player's level; which area they are in is in the reading, so speak to that one."
+      ],
+      "sources": [
+        "https://meowdb.com/msclassic/music",
+        "https://meowdb.com/msclassic/guides/best-grind-maps-every-level"
+      ]
+    },
+    {
+      "id": "ant-tunnel",
+      "when": "map_entered",
+      "where": {
+        "maps": [
+          "Ant Tunnel I",
+          "Ant Tunnel II",
+          "Ant Tunnel III",
+          "Ant Tunnel IV",
+          "Ant Tunnel Park",
+          "Deep Ant Tunnel I",
+          "Deep Ant Tunnel II",
+          "Dangerous Steam",
+          "The Cave of Evil Eye III"
+        ],
+        "world": "classic",
+        "tempo_at_most": "travel"
+      },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 6,
+      "odds": 0.6,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Ancient Move",
+        "length": "4:20",
+        "place_kind": "the dungeon under Sleepywood",
+        "monsters": {
+          "Dangerous Steam": "Stirge (level 20), Horny and Zombie Mushrooms",
+          "Ant Tunnel III and Deep Ant Tunnel I": "Zombie Mushroom (level 24), Horny Mushroom; Jr. Boogie deep in",
+          "Ant Tunnel Park and The Cave of Evil Eye III": "Evil Eye (level 27); a rare Jr. Boogie 2 (level 35) in the cave"
+        },
+        "good_for_levels": "16–20 at Dangerous Steam, 21–30 in the tunnels and the park"
+      },
+      "notes": [
+        "The guide's picks for Classic World. A tunnel is a fight more often than not: this is for the way in or a breather, never mid-pack."
+      ],
+      "sources": [
+        "https://meowdb.com/msclassic/music",
+        "https://meowdb.com/msclassic/guides/best-grind-maps-every-level"
+      ]
+    },
+    {
+      "id": "florina-beach",
+      "when": "map_entered",
+      "where": {
+        "maps": [
+          "Florina Beach",
+          "A Look-Out Shed Around the Beach",
+          "Lorang Lorang",
+          "Hot Sand",
+          "Lorang and Clang",
+          "Clang and Lorang"
+        ],
+        "world": "classic",
+        "tempo_at_most": "travel"
+      },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 7,
+      "odds": 0.7,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Beachway",
+        "length": "3:16",
+        "place_kind": "the beach off Lith Harbor",
+        "monsters": {
+          "A Look-Out Shed Around the Beach and Lorang Lorang": "Lorang (level 38)",
+          "Hot Sand": "Tortie and Clang",
+          "Lorang and Clang": "Clang (level 49), Lorang"
+        },
+        "good_for_levels": "36–40 with Lorangs, 46–55 with Clangs and Torties"
+      },
+      "notes": ["A beach with a tune of its own; the guide's picks for Classic World by level."],
+      "sources": [
+        "https://meowdb.com/msclassic/music",
+        "https://meowdb.com/msclassic/guides/best-grind-maps-every-level"
+      ],
+      "hum": "harbor-swing"
+    },
+    {
+      "id": "golems-temple",
+      "when": "map_entered",
+      "where": {
+        "maps": [
+          "The Entrance of Golem's Temple",
+          "Golem's Temple I",
+          "Golem's Temple II",
+          "Golem's Temple III",
+          "Golem's Temple IV"
+        ],
+        "world": "classic",
+        "tempo_at_most": "travel"
+      },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 6,
+      "odds": 0.6,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Rest N Peace",
+        "length": "2:55",
+        "place_kind": "the temple east of Henesys",
+        "monsters": "Stone Golems; the entrance is named a party-and-loot pick, mob levels 19–56"
+      },
+      "notes": [
+        "The guide's note for Classic World. Golems hit hard for their level: a breather here is short."
+      ],
+      "sources": [
+        "https://meowdb.com/msclassic/music",
+        "https://meowdb.com/msclassic/guides/best-grind-maps-every-level"
+      ]
+    },
+    {
+      "id": "sleepy-dungeon",
+      "when": "map_entered",
+      "where": {
+        "maps": [
+          "Sleepy Dungeon I",
+          "Sleepy Dungeon II",
+          "Sleepy Dungeon III",
+          "Sleepy Dungeon IV",
+          "Sleepy Dungeon V"
+        ],
+        "world": "classic",
+        "tempo_at_most": "travel"
+      },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 6,
+      "odds": 0.6,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Sleepy Wood",
+        "length": "2:47",
+        "place_kind": "the dungeon under Sleepywood, deep",
+        "monsters": { "Sleepy Dungeon III and V": "Dark Stone Golem (level 58), Lupin, Curse Eye" },
+        "good_for_levels": "56–60"
+      },
+      "notes": ["The guide's pick for Classic World at the late fifties."],
+      "sources": [
+        "https://meowdb.com/msclassic/music",
+        "https://meowdb.com/msclassic/guides/best-grind-maps-every-level"
+      ]
+    },
+    {
+      "id": "monkey-forest",
+      "when": "map_entered",
+      "where": {
+        "maps": [
+          "Monkey Forest I",
+          "Monkey Forest II",
+          "Monkey Swamp III",
+          "Tree Dungeon, Monkey Forest II"
+        ],
+        "world": "classic",
+        "tempo_at_most": "travel"
+      },
+      "topic": "place",
+      "kind": "remark",
+      "interest": 5,
+      "odds": 0.5,
+      "once_per_session": true,
+      "facts": {
+        "bgm": "Missing You",
+        "length": "2:27",
+        "place_kind": "the tree dungeon under Ellinia",
+        "monsters": {
+          "Monkey Forest II": "Zombie Lupin (level 41), Lupin",
+          "Monkey Swamp III": "Zombie Lupin (level 41), Jr. Necki"
+        },
+        "good_for_levels": "36–45"
+      },
+      "notes": ["The guide's picks for Classic World; the tune is the forest's own, not Ellinia's."],
+      "sources": [
+        "https://meowdb.com/msclassic/music",
+        "https://meowdb.com/msclassic/guides/best-grind-maps-every-level"
+      ]
+    },
+    {
+      "id": "training-map-for-the-level",
+      "when": "level_up",
+      "where": { "level_min": 11, "level_max": 70, "world": "classic", "tempo_at_most": "travel" },
+      "topic": "plan",
+      "kind": "suggestion",
+      "interest": 7,
+      "odds": 0.8,
+      "once_per_session": false,
+      "facts": {
+        "guide_picks_by_level": {
+          "11–15": "Line 1 <Area 1> (Bubbling, lv 15); West Rocky Mountain III (Green Mushroom, lv 14); Tree Dungeon, Forest Up North IV (Green Mushroom)",
+          "16–20": "Dangerous Steam (Stirge, lv 20); Transfer Area (Stirge); Tree Dungeon, Forest Up North III (Horny Mushroom, lv 22)",
+          "21–25": "Ant Tunnel III (Zombie Mushroom, lv 24); Deep Ant Tunnel I; Ant Tunnel Park (Evil Eye, lv 27)",
+          "26–30": "Deep Ant Tunnel I; Ant Tunnel Park; The Cave of Evil Eye III (Evil Eye, lv 27)",
+          "31–35": "Line 2 <Area 1> (Jr. Wraith, lv 34); Line 1 <Area 2>; The Burnt Land V (Fire Boar, lv 32)",
+          "36–40": "A Look-Out Shed Around the Beach (Lorang, lv 38); Lorang Lorang; Monkey Forest II (Zombie Lupin, lv 41)",
+          "41–45": "Monkey Swamp III (Zombie Lupin, lv 41); Dangerous Valley (Copper Drake, lv 45); Tree Dungeon, Monkey Forest II",
+          "46–50": "Line 2 <Area 2> and <Area 3> (Wraith, lv 48); Line 1 <Area 4>; Hot Sand (Tortie, Clang)",
+          "51–55": "Lorang and Clang (Clang, lv 49); Dangerous Croko II (Croco, lv 52)",
+          "56–60": "Sleepy Dungeon V (Dark Stone Golem, lv 58); Sleepy Dungeon III",
+          "61–70": "Dangerous Valley II (Red Drake, lv 60)"
+        },
+        "party_picks": "The Pig Beach (mobs lv 2–28), Land of Wild Boar (23–35), The Burnt Land II (23–32), Dangerous Valley (32–45), Drake Hunting Ground (22–50), The Entrance of Golem's Temple (19–56)",
+        "also": "Kerning City Party Quest from level 21 (see its own hook)"
+      },
+      "notes": [
+        "One fan guide's picks for Classic World (dated 2026-10-23), not the only way to play: offer the row for the level they just reached as what you'd do, with the one monster, as a friend — never read the table, never promise EXP numbers.",
+        "If they are already on a map the row names, say nothing of it.",
+        "Between 21 and 30 the party quest is the better suggestion when they have company; alone, the map."
+      ],
+      "sources": ["https://meowdb.com/msclassic/guides/best-grind-maps-every-level"]
+    }
+  ]
+}

@@ -60,6 +60,17 @@ pub enum Effect {
     },
     /// Change MapleSyrup's own program on this PC, as the player asked.
     Rewrite(String),
+    /// Move the bar of how it talks to the player to the level with this
+    /// id, as they asked (the phone's bar follows).
+    Tone(String),
+    /// Speak this language with the player from now on (one of the phone's
+    /// [`super::language::LOCALES`]), as they asked: theirs, as if picked
+    /// on the phone.
+    Language(String),
+    /// Move the dial of how much it speaks up on its own (quiet, normal,
+    /// talkative: `intuition/initiative.json`) to the level with this id,
+    /// as they asked.
+    Initiative(String),
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -84,6 +95,10 @@ pub const RECORD_OFF: &str = "stop recording";
 /// …and to speak up on its own, or only when asked.
 pub const COACH_ON: &str = "coach";
 pub const COACH_OFF: &str = "stop coaching";
+/// What a model asking for a level behind the password is told (the call
+/// and Claude alike).
+pub const LOCKED_LEVEL: &str = "That level is locked: it opens only with the player's password, on the page. The bar \
+stays where it is; tell them so in a few words.";
 
 fn function(name: &str, description: &str, properties: Value) -> Value {
     let required: Vec<String> = properties
@@ -105,8 +120,31 @@ fn function(name: &str, description: &str, properties: Value) -> Value {
 }
 
 fn a_box(what: &str) -> Value {
-    json!({"type": "array", "items": {"type": "number"},
-           "description": format!("{what}: [x0, y0, x1, y1] in the first picture's 0–1000 coordinates (rulers on its edges)")})
+    json!({"type": ["array", "null"], "items": {"type": "number"},
+           "description": format!("{what}: [x0, y0, x1, y1] in a picture's 0–1000 coordinates (rulers on its edges), or null when you have no picture: MapleSyrup's eyes find it on the whole screen")})
+}
+
+/// The box a tool was given (`args["box"]`): a box of the screen, the whole
+/// screen when none was given (the caller sees no picture and MapleSyrup's
+/// eyes look over all of it), or an error to tell the model.
+fn given_box(args: &Value) -> Result<Option<NBox>, String> {
+    let values: Vec<f64> = args["box"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_f64)
+        .collect();
+    if values.is_empty() {
+        return Ok(None);
+    }
+    NBox::from_thousandths(&values)
+        .map(Some)
+        .ok_or_else(|| "The box must be four numbers from 0 to 1000.".to_string())
+}
+
+/// The whole screen, as a box.
+fn whole_screen() -> NBox {
+    NBox::new(0.0, 0.0, 1.0, 1.0)
 }
 
 impl Toolbox {
@@ -183,6 +221,30 @@ character (always on screen), and never with an alert about something else (leve
                 "set_recording",
                 "Start (on: true) or stop (on: false) recording the session as a video on the player's PC: the whole screen, the game's sound, your voice and theirs. Only when the player asks.",
                 json!({"on": {"type": "boolean"}}),
+            ),
+            function(
+                "set_tone",
+                "Move the bar of how you talk to the player — the one on their page, gentlest first — to another \
+level, when they ask you to talk to them another way, in any words and any language (to swear or not, to be gentler, \
+to roast them, no filter). The open levels never swear; the ones past them open only with the player's password on \
+the page.",
+                json!({"tone": {"type": "string", "enum": crate::companion::spectrum::Spectrum::get().ids(),
+                                "description": "The level, gentlest first."}}),
+            ),
+            function(
+                "set_initiative",
+                "Move the dial of how much you speak up on your own — thoughts, remarks, ideas of what to do next — \
+when they ask for more of that or less of it (\"talk more\", \"less chatter\", \"you can speak up\"), in any words \
+and any language. Not for stopping altogether: that is set_coaching.",
+                json!({"level": {"type": "string", "enum": crate::intuition::director::Initiative::get().ids(),
+                                 "description": "The level, quietest first."}}),
+            ),
+            function(
+                "set_language",
+                "Switch the language you speak with the player — theirs on the phone too — when they ask you to talk \
+in another language, in any words and any language.",
+                json!({"language": {"type": "string", "enum": super::language::LOCALES,
+                                    "description": "The language, as the phone names it."}}),
             ),
             function(
                 "look_closer",
@@ -265,19 +327,18 @@ speak again only if you were wrong. Also when the player asks you to look someth
                 let Some(kind) = Kind::parse(&text("kind")) else {
                     return ("Unknown kind.".into(), None);
                 };
-                let values: Vec<f64> = args["box"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_f64)
-                    .collect();
-                let Some(rough) = NBox::from_thousandths(&values) else {
-                    return ("The box must be four numbers from 0 to 1000.".into(), None);
+                let given = match given_box(&args) {
+                    Ok(given) => given,
+                    Err(why) => return (why, None),
                 };
+                let rough = given.unwrap_or_else(whole_screen);
                 let describe = text("describe");
-                // A close-up to pin it down; the rough box if that fails.
+                // A close-up to pin it down; the rough box if that fails —
+                // when there was one: with none, MapleSyrup's eyes looked
+                // over the whole screen, and a thing they did not find is
+                // not learned as the whole screen.
                 let (question, around) = teacher::refine(frame, &rough, &name, &describe);
-                let place = look(&self.eyes, &question)
+                let found = look(&self.eyes, &question)
                     .ok()
                     .and_then(|answer| teacher::parse_refined(&answer, &around))
                     .filter(|b| {
@@ -285,8 +346,15 @@ speak again only if you were wrong. Also when the player asks you to look someth
                         let g = rough.grown(1.0, 1.0);
                         let (cx, cy) = b.center();
                         cx >= g.x0 && cx <= g.x1 && cy >= g.y0 && cy <= g.y1
-                    })
-                    .unwrap_or(rough);
+                    });
+                let Some(place) = found.or(given) else {
+                    return (
+                        format!(
+                            "MapleSyrup's eyes couldn't find {name} on the screen: ask them where it is, or what it looks like."
+                        ),
+                        None,
+                    );
+                };
                 let alert = When::parse(&text("alert")).map(|when| Alert {
                     when,
                     threshold: args["threshold"].as_f64().map(|t| t as f32),
@@ -474,18 +542,63 @@ and installs the next time MapleSyrup starts. Tell the player it takes a few min
                     )),
                 )
             }
+            "set_tone" => {
+                let tone = text("tone");
+                let spectrum = crate::companion::spectrum::Spectrum::get();
+                let shut = |at: usize| {
+                    spectrum.level(at).locked
+                        && !self.learning.as_ref().is_some_and(|l| l.memory().unlocked)
+                };
+                match spectrum.index(&tone) {
+                    Some(at) if shut(at) => (LOCKED_LEVEL.into(), None),
+                    Some(at) => {
+                        let tone = spectrum.level(at).id.clone();
+                        (
+                            format!(
+                                "The bar is moving to {tone}: talk that way from your next words."
+                            ),
+                            Some(Effect::Tone(tone)),
+                        )
+                    }
+                    None => ("No such level.".into(), None),
+                }
+            }
+            "set_initiative" => {
+                let level = text("level");
+                if crate::intuition::director::Initiative::get()
+                    .ids()
+                    .contains(&level.as_str())
+                {
+                    (
+                        format!(
+                            "The dial is moving to {level}: speak up on your own that much from now on."
+                        ),
+                        Some(Effect::Initiative(level)),
+                    )
+                } else {
+                    ("No such level.".into(), None)
+                }
+            }
+            "set_language" => {
+                let wanted = text("language");
+                match super::language::LOCALES.iter().find(|l| **l == wanted) {
+                    Some(locale) => {
+                        let name = super::language::name(locale);
+                        (
+                            format!("Switched to {name}: speak {name} from now on, starting now."),
+                            Some(Effect::Language(locale.to_string())),
+                        )
+                    }
+                    None => ("The phone has no such language.".into(), None),
+                }
+            }
             "look_closer" => {
                 let Some(frame) = frame else {
                     return ("The game can't be seen right now.".into(), None);
                 };
-                let values: Vec<f64> = args["box"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_f64)
-                    .collect();
-                let Some(place) = NBox::from_thousandths(&values) else {
-                    return ("The box must be four numbers from 0 to 1000.".into(), None);
+                let place = match given_box(&args) {
+                    Ok(given) => given.unwrap_or_else(whole_screen),
+                    Err(why) => return (why, None),
                 };
                 match look(
                     &self.eyes,
@@ -841,6 +954,35 @@ pub fn refused(name: &str, args: &Value, heard: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_box_is_optional_and_none_means_the_whole_screen() {
+        // No box (the call sees no picture): MapleSyrup's eyes look over
+        // the whole screen.
+        assert_eq!(given_box(&json!({})), Ok(None));
+        assert_eq!(given_box(&json!({"box": null})), Ok(None));
+        assert_eq!(given_box(&json!({"box": []})), Ok(None));
+        let whole = whole_screen();
+        assert_eq!(
+            (whole.x0, whole.y0, whole.x1, whole.y1),
+            (0.0, 0.0, 1.0, 1.0)
+        );
+        // A box given is taken; a wrong one is said to be wrong.
+        assert!(matches!(
+            given_box(&json!({"box": [100, 200, 300, 400]})),
+            Ok(Some(_))
+        ));
+        assert!(given_box(&json!({"box": [1, 2, 3]})).is_err());
+        // The tools say so.
+        let box_schema = a_box("A tight box around it");
+        assert_eq!(box_schema["type"], json!(["array", "null"]));
+        assert!(
+            box_schema["description"]
+                .as_str()
+                .unwrap()
+                .contains("null when you have no picture")
+        );
+    }
+
     fn toolbox(dir: &std::path::Path) -> Toolbox {
         Toolbox {
             workshop: None,
@@ -904,6 +1046,60 @@ mod tests {
                     &call("note_correction", json!({"about": "", "right": "x"})),
                     None
                 )
+                .1,
+            None
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_way_it_talks_and_its_language_change_when_the_player_asks() {
+        let dir = std::env::temp_dir().join(format!("ms-tools-tone-{}", std::process::id()));
+        let tools = toolbox(&dir);
+        let names: Vec<String> = tools
+            .definitions()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect();
+        assert!(names.contains(&"set_tone".to_string()));
+        assert!(names.contains(&"set_language".to_string()));
+        let spectrum = crate::companion::spectrum::Spectrum::get();
+        let levels = spectrum.ids();
+        let highest_open = spectrum
+            .levels()
+            .iter()
+            .rev()
+            .find(|l| !l.locked)
+            .unwrap()
+            .id
+            .clone();
+        let (said, effect) = tools.run(&call("set_tone", json!({"tone": highest_open})), None);
+        assert!(said.contains(&highest_open), "{said}");
+        assert_eq!(effect, Some(Effect::Tone(highest_open)));
+        // Past the open levels, only with the player's password.
+        let wildest = levels.last().unwrap().to_string();
+        let (said, effect) = tools.run(&call("set_tone", json!({"tone": wildest})), None);
+        assert_eq!((said.as_str(), effect), (LOCKED_LEVEL, None));
+        let opened = tools
+            .learning
+            .as_ref()
+            .unwrap()
+            .memory()
+            .unlock("wild horses");
+        assert_ne!(opened, crate::ai::memory::Unlock::Wrong);
+        let (said, effect) = tools.run(&call("set_tone", json!({"tone": wildest})), None);
+        assert!(said.contains(&wildest), "{said}");
+        assert_eq!(effect, Some(Effect::Tone(wildest)));
+        assert_eq!(
+            tools.run(&call("set_tone", json!({"tone": "x"})), None).1,
+            None
+        );
+        let (said, effect) = tools.run(&call("set_language", json!({"language": "en-US"})), None);
+        assert!(said.contains("speak English"), "{said}");
+        assert_eq!(effect, Some(Effect::Language("en-US".into())));
+        assert_eq!(
+            tools
+                .run(&call("set_language", json!({"language": "xx-YY"})), None)
                 .1,
             None
         );

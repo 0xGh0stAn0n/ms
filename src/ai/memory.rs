@@ -30,6 +30,7 @@ use serde_json::{Value, json};
 
 use super::knowledge::{self, Entry, Knowledge, Source, id_of};
 use super::openai::{Ask, OpenAi};
+use crate::companion::spectrum::{Level, Spectrum};
 
 pub const FILE: &str = "memory.json";
 /// At most this many facts, style notes and words are kept.
@@ -213,14 +214,41 @@ pub struct Memory {
     /// What the player told it to forget (a look back that was under way
     /// may hand it back).
     pub forgotten: Vec<String>,
-    /// How it talks to the player (picked on the phone).
+    /// The voice of its own lines at the level it talks at now
+    /// ([`Memory::level`]; kept so by [`Memory::retune`]), as versions
+    /// from before the bar read it.
     pub attitude: super::style::Attitude,
+    /// Where the player set the bar of how it talks to them: a level's name
+    /// in `companion/spectrum.json` (a notebook from before the bar gets
+    /// the attitude it kept).
+    pub tone: Option<String>,
+    /// The password that opens the bar's locked levels, as
+    /// `salt:sha256(salt + password)` in hex; None until the player chooses
+    /// one (the first password given is the one).
+    pub lock: Option<String>,
+    /// Whether the locked levels are open on this PC (until locked again).
+    pub unlocked: bool,
+    /// Wrong passwords given since it started, for the page to say so.
+    #[serde(skip)]
+    pub wrong_passwords: u32,
     /// The voice it speaks in (an ElevenLabs voice's id; `None` or
     /// "openai": OpenAI's).
     pub voice: Option<String>,
     /// Whether it speaks up on its own while they play (the coach); None
     /// is the usual, on.
     pub coach: Option<bool>,
+    /// How much it speaks up on its own with thoughts of its own — the
+    /// dial's level in `intuition/initiative.json`; None is where the dial
+    /// starts.
+    pub initiative: Option<String>,
+    /// What the player likes and dislikes in the game, in their words
+    /// ("the player loves Ellinia's music"): what MapleSyrup's own taste is
+    /// weighed against, and what it brings up again ([`MOST_TASTES`]).
+    pub tastes: Vec<String>,
+    /// Moments they shared, dated by the session ("2026-11-01: first
+    /// Kerning City PQ together, two levels in half an hour"), newest last
+    /// ([`MOST_MOMENTS`]).
+    pub moments: Vec<String>,
     /// Whether it updates itself when a new version is out; None is the
     /// usual, on.
     pub updates: Option<bool>,
@@ -236,6 +264,44 @@ pub struct Memory {
 
 /// At most this many forgotten things are kept, to keep them forgotten.
 const MOST_FORGOTTEN: usize = 100;
+/// At most this many of the player's tastes, and of the moments shared.
+pub const MOST_TASTES: usize = 20;
+pub const MOST_MOMENTS: usize = 12;
+
+/// What giving a password for the bar's locked levels did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unlock {
+    /// None was chosen yet: this one is the player's now, and they are open.
+    Chosen,
+    /// The right one: they are open.
+    Opened,
+    /// Not it: they stay shut.
+    Wrong,
+}
+
+/// The password's hash with its salt, in hex.
+fn password_hash(salt: &str, password: &str) -> String {
+    let digest = ring::digest::digest(
+        &ring::digest::SHA256,
+        format!("{salt}{password}").as_bytes(),
+    );
+    digest.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A salt for a new password: 8 random bytes, in hex.
+fn random_salt() -> String {
+    use ring::rand::SecureRandom;
+    let mut bytes = [0u8; 8];
+    // (Should the system's randomness fail, the time still varies it.)
+    if ring::rand::SystemRandom::new().fill(&mut bytes).is_err() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        bytes = (nanos as u64).to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 impl Memory {
     /// What is kept in `settings` (nothing yet: an empty notebook).
@@ -246,7 +312,66 @@ impl Memory {
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
         memory.path = Some(path);
+        // A notebook from before the bar: the bar is where its attitude was.
+        if memory.tone.is_none() {
+            let spectrum = Spectrum::get();
+            memory.tone = Some(spectrum.of_voice(memory.attitude).id.clone());
+        }
+        memory.retune();
         memory
+    }
+
+    /// Where the bar is set (a level's place on it).
+    pub fn tone_set(&self) -> usize {
+        let spectrum = Spectrum::get();
+        self.tone
+            .as_deref()
+            .and_then(|id| spectrum.index(id))
+            .unwrap_or_else(|| spectrum.default_index())
+    }
+
+    /// The level it talks at: where the bar is set, or, while the locked
+    /// levels are shut, the highest open level below it.
+    pub fn level(&self) -> &'static Level {
+        let spectrum = Spectrum::get();
+        spectrum.level(spectrum.open_at(self.tone_set(), self.unlocked))
+    }
+
+    /// The player gives `password` for the locked levels: the first one
+    /// given is kept as theirs; the right one opens them.
+    pub fn unlock(&mut self, password: &str) -> Unlock {
+        let password = password.trim();
+        if password.is_empty() {
+            self.wrong_passwords += 1;
+            return Unlock::Wrong;
+        }
+        let outcome = match self.lock.as_deref().and_then(|lock| lock.split_once(':')) {
+            Some((salt, hash)) if password_hash(salt, password) == hash => Unlock::Opened,
+            Some(_) => {
+                self.wrong_passwords += 1;
+                return Unlock::Wrong;
+            }
+            None => {
+                let salt = random_salt();
+                self.lock = Some(format!("{salt}:{}", password_hash(&salt, password)));
+                Unlock::Chosen
+            }
+        };
+        self.unlocked = true;
+        self.retune();
+        outcome
+    }
+
+    /// The locked levels shut again (the password stays).
+    pub fn relock(&mut self) {
+        self.unlocked = false;
+        self.retune();
+    }
+
+    /// Keep `attitude` the voice of the level it talks at, after the bar
+    /// moved.
+    pub fn retune(&mut self) {
+        self.attitude = self.level().voice;
     }
 
     pub fn save(&self) {
@@ -293,10 +418,45 @@ impl Memory {
                 );
             }
         }
+        if !self.tastes.is_empty() {
+            text.push_str(
+                "What they like and don't in the game (weigh your own taste against it; agree only \
+where you really do):\n",
+            );
+            for taste in &self.tastes {
+                text.push_str(&format!("- {taste}\n"));
+            }
+        }
+        if !self.moments.is_empty() {
+            text.push_str(
+                "Moments you shared (bring one up only when it bears on now, in a clause):\n",
+            );
+            for moment in &self.moments {
+                text.push_str(&format!("- {moment}\n"));
+            }
+        }
         if !self.last_time.trim().is_empty() {
             text.push_str(&format!("Lately: {}\n", self.last_time.trim()));
         }
         text.trim_end().to_string()
+    }
+
+    /// Forget one of their tastes, or a moment, by its id (`id_of` its
+    /// text). Returns it.
+    pub fn forget_taste(&mut self, id: &str) -> Option<String> {
+        let at = self.tastes.iter().position(|t| id_of(t) == id)?;
+        let gone = self.tastes.remove(at);
+        self.keep_forgotten(&gone);
+        self.save();
+        Some(gone)
+    }
+
+    pub fn forget_moment(&mut self, id: &str) -> Option<String> {
+        let at = self.moments.iter().position(|m| id_of(m) == id)?;
+        let gone = self.moments.remove(at);
+        self.keep_forgotten(&gone);
+        self.save();
+        Some(gone)
     }
 
     /// The names and words the player uses, for hearing them right.
@@ -369,6 +529,16 @@ impl Memory {
         style.retain(|s| !self.is_forgotten(s));
         self.style = style;
         self.words = list("words", MOST_WORDS, 40);
+        if notebook["tastes"].is_array() {
+            let mut tastes = list("tastes", MOST_TASTES, 160);
+            tastes.retain(|t| !self.is_forgotten(t));
+            self.tastes = tastes;
+        }
+        if notebook["moments"].is_array() {
+            let mut moments = list("moments", MOST_MOMENTS, 200);
+            moments.retain(|m| !self.is_forgotten(m));
+            self.moments = moments;
+        }
         let last: String = notebook["last_time"]
             .as_str()
             .unwrap_or("")
@@ -644,6 +814,8 @@ pub fn look_back(memory: &Memory, told: &str, lessons: &[Entry], talk: &[String]
         "facts": memory.facts.iter().map(|f| f.text.clone()).collect::<Vec<_>>(),
         "style": memory.style,
         "words": memory.words,
+        "tastes": memory.tastes,
+        "moments": memory.moments,
         "last_time": memory.last_time,
     });
     let mut text = format!(
@@ -677,6 +849,8 @@ pub fn look_back(memory: &Memory, told: &str, lessons: &[Entry], talk: &[String]
             "facts": strings,
             "style": strings,
             "words": strings,
+            "tastes": strings,
+            "moments": strings,
             "last_time": {"type": "string"},
             "lessons": {"type": "array", "items": {
                 "type": "object",
@@ -685,7 +859,7 @@ pub fn look_back(memory: &Memory, told: &str, lessons: &[Entry], talk: &[String]
                 "additionalProperties": false,
             }},
         },
-        "required": ["facts", "style", "words", "last_time", "lessons"],
+        "required": ["facts", "style", "words", "tastes", "moments", "last_time", "lessons"],
         "additionalProperties": false,
     });
     Ask {
@@ -712,6 +886,12 @@ language they speak, less warnings...); at most 8.
 - words: names and words they say that speech-to-text could get wrong (their character's name as the game shows \
 it, maps, bosses, items, slang), spelled right — only a word they said in two sentences or more, never a name for \
 the player, never from a line of theirs that repeats what MapleSyrup had just said; at most 40.
+- tastes: what they said they like or don't in the game — music, maps, bosses, classes, ways of playing — only \
+from their own words, never from MapleSyrup's (\"the player thinks Ellinia's music is the most beautiful\"); keep \
+what still holds, at most 20, one short sentence each in the third person.
+- moments: the moments worth remembering together, each dated by its session (\"2026-11-01: first Kerning City \
+party quest together, King Slime down\"): a first, a close call survived, a boss finally beaten, a running joke; \
+newest last, at most 12, each one short sentence.
 - last_time: two or three sentences on what they did and talked about lately, so MapleSyrup can pick up from \
 there.
 - lessons: only what the player corrected MapleSyrup on in this conversation (a game fact, a name, how to do \
@@ -897,13 +1077,16 @@ impl Learning {
     }
 
     /// Forget one thing the phone showed, by its id: `m:` a fact, `s:` a
-    /// note on how they like it to talk, `a:` something they asked it to
-    /// remember, `k:` a lesson or something looked up. Returns what it was.
+    /// note on how they like it to talk, `t:` one of their tastes, `e:` a
+    /// moment shared, `a:` something they asked it to remember, `k:` a
+    /// lesson or something looked up. Returns what it was.
     pub fn forget(&self, id: &str) -> Option<String> {
         let (kind, id) = id.split_once(':')?;
         match kind {
             "m" => self.memory().forget(id),
             "s" => self.memory().forget_style(id),
+            "t" => self.memory().forget_taste(id),
+            "e" => self.memory().forget_moment(id),
             "k" => self.knowledge().forget(id),
             "a" => {
                 let file = self.settings.join(TOLD);
@@ -929,7 +1112,7 @@ impl Learning {
         let told: Vec<Value> = told_lines(&self.told())
             .map(|t| json!({"id": format!("a:{}", id_of(t)), "text": t}))
             .collect();
-        let (facts, style, lately, sessions, adapt) = {
+        let (facts, style, lately, sessions, adapt, tastes, moments, initiative) = {
             let memory = self.memory();
             (
                 memory
@@ -945,6 +1128,17 @@ impl Learning {
                 memory.last_time.clone(),
                 memory.sessions,
                 memory.adapt.clone(),
+                memory
+                    .tastes
+                    .iter()
+                    .map(|t| json!({"id": format!("t:{}", id_of(t)), "text": t}))
+                    .collect::<Vec<_>>(),
+                memory
+                    .moments
+                    .iter()
+                    .map(|m| json!({"id": format!("e:{}", id_of(m)), "text": m}))
+                    .collect::<Vec<_>>(),
+                memory.initiative.clone(),
             )
         };
         let knowledge = self.knowledge();
@@ -960,6 +1154,9 @@ impl Learning {
             "lately": lately,
             "sessions": sessions,
             "lessons": lessons,
+            "tastes": tastes,
+            "moments": moments,
+            "initiative": initiative,
             "looked_up": knowledge.looked_up(),
             "settle_ms": adapt.settle_ms,
             "eagerness": adapt.eagerness,
@@ -1313,6 +1510,69 @@ mod tests {
         let again = Memory::load(&dir);
         assert_eq!(again.facts, memory.facts);
         assert_eq!(again.adapt.settle_ms, 700);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn it_talks_where_the_bar_is_set_and_the_locked_levels_open_with_the_password() {
+        use crate::companion::Attitude;
+        let spectrum = Spectrum::get();
+        let wildest = spectrum.levels().len() - 1;
+        let highest_open = spectrum.open_at(wildest, false);
+        // A notebook from before the bar, savage then (locked now), and from
+        // the age question's days (an answer and a place it no longer
+        // reads): the bar is where its attitude was, and it talks at the
+        // highest open level until the player opens the locked ones.
+        let dir = temp("tone");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(FILE),
+            r#"{"attitude": "savage", "age": {"age": 18, "adult": false}, "place": {"country": "IL"}}"#,
+        )
+        .unwrap();
+        let mut memory = Memory::load(&dir);
+        let savage = spectrum.of_voice(Attitude::Savage);
+        assert!(savage.locked);
+        assert_eq!(memory.tone.as_deref(), Some(savage.id.as_str()));
+        assert_eq!(memory.level().id, spectrum.level(highest_open).id);
+        assert_eq!(memory.attitude, spectrum.level(highest_open).voice);
+        // The first password is the player's, and opens them.
+        assert_eq!(memory.unlock("  wild horses "), Unlock::Chosen);
+        assert_eq!(memory.level().id, savage.id);
+        assert_eq!(memory.attitude, Attitude::Savage);
+        let lock = memory.lock.clone().unwrap();
+        assert!(!lock.contains("wild horses"), "{lock}");
+        // Shut again, a wrong one keeps them shut; the right one opens them.
+        memory.relock();
+        assert_eq!(memory.level().id, spectrum.level(highest_open).id);
+        assert_eq!(memory.unlock("tame horses"), Unlock::Wrong);
+        assert_eq!(memory.unlock(""), Unlock::Wrong);
+        assert_eq!(memory.wrong_passwords, 2);
+        assert!(!memory.unlocked);
+        assert_eq!(memory.unlock("wild horses"), Unlock::Opened);
+        // The wildest end, open.
+        memory.tone = Some(spectrum.level(wildest).id.clone());
+        memory.retune();
+        assert_eq!(memory.level().id, spectrum.level(wildest).id);
+        // Kept as set, the password and that they are open with it (without
+        // what it no longer reads, nor the wrong tries).
+        memory.save();
+        let saved = std::fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(!saved.contains("\"place\""), "{saved}");
+        assert!(!saved.contains("wrong_passwords"), "{saved}");
+        let again = Memory::load(&dir);
+        assert_eq!(again.tone, memory.tone);
+        assert_eq!(again.lock, memory.lock);
+        assert!(again.unlocked);
+        assert_eq!(again.level().id, memory.level().id);
+        // A new notebook: the bar where it starts, the locked levels shut.
+        let fresh = Memory::load(&temp("tone-fresh"));
+        assert_eq!(fresh.tone_set(), spectrum.default_index());
+        assert!(!fresh.unlocked && fresh.lock.is_none());
+        assert_eq!(
+            fresh.level().id,
+            spectrum.level(spectrum.default_index()).id
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

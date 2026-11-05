@@ -142,13 +142,18 @@ impl GameCapture {
         })
     }
 
-    /// Whether the frames are the game window's own pixels whatever lies
-    /// over it: they come from the GPU (Windows.Graphics.Capture), not from
-    /// GDI, whose last resort is a copy of the screen where the window is.
-    pub fn own_pixels(&self) -> bool {
-        self.window
-            .as_ref()
-            .is_some_and(|w| w.gpu_unavailable().is_none())
+    /// Whether a covered window comes through as it is drawn: the frames
+    /// are the compositor's own (Windows.Graphics.Capture), so another
+    /// window over the game is not in them, and the game behind it is read
+    /// as it is. False before a frame was asked for, and on the CPU path,
+    /// whose last resort is a copy of the screen where the game is (there,
+    /// a window over it would be read instead).
+    pub fn draws_covered(&self) -> bool {
+        cfg!(windows)
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.gpu_unavailable().is_none())
     }
 
     pub fn capture(&mut self) -> Captured {

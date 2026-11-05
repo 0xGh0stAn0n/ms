@@ -20,22 +20,10 @@ pub struct GameArea {
     pub width: i32,
     pub height: i32,
     /// Whether the game has the focus: the window in front is the game's
-    /// or another of its process's (by process, not by the one window
-    /// found by its title).
+    /// or another of its process's.
     pub foreground: bool,
     /// The game's process, whose sound is turned down while MapleSyrup talks.
     pub pid: u32,
-}
-
-impl GameArea {
-    /// Whether the game's screen is to be read: always when the frames
-    /// are its own pixels (`own_pixels`: Windows.Graphics.Capture, which
-    /// captures a covered window as it is), else only while it has the
-    /// focus — the frames may be a copy of the screen, and a window over
-    /// the game would be read instead. (Not minimised: there is no area.)
-    pub fn readable(&self, own_pixels: bool) -> bool {
-        own_pixels || self.foreground
-    }
 }
 
 #[cfg(windows)]
@@ -116,6 +104,9 @@ mod win {
             }
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            // The game has the focus when the window in front is any of its
+            // process's (a dialog of its own), not only the one found by
+            // its title.
             let front = GetForegroundWindow();
             let mut front_pid = 0u32;
             if !front.is_invalid() {
@@ -366,29 +357,5 @@ mod win {
             let _ = SelectObject(dc, old);
             let _ = DeleteObject(font.into());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_game_is_read_while_it_has_the_focus_or_its_own_frames_come() {
-        let area = |foreground| GameArea {
-            left: 0,
-            top: 0,
-            width: 1280,
-            height: 720,
-            foreground,
-            pid: 42,
-        };
-        // Its own pixels (Windows.Graphics.Capture): read with the Claude
-        // chat or the console in focus, the game in plain sight beside it.
-        assert!(area(false).readable(true));
-        assert!(area(true).readable(true));
-        // A copy of the screen: only while the game has the focus.
-        assert!(area(true).readable(false));
-        assert!(!area(false).readable(false));
     }
 }

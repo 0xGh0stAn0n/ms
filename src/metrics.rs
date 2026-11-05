@@ -121,6 +121,12 @@ pub const RECORD_FIELDS: &[&str] = &[
     "clip_minutes",
     "coach_looks",
     "coach_lines",
+    "thoughts",
+    "spoken",
+    "engaged",
+    "ignored",
+    "rejected",
+    "initiative",
     "attitude",
     "language",
     "version",
@@ -399,6 +405,18 @@ pub struct Warnings {
     pub taught: u32,
 }
 
+/// What became of the thoughts of its own ([`crate::intuition`]): said,
+/// answered within the window, let pass, shushed. The measure the design
+/// is tuned by (about half answered, few shushed), counts only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Thoughts {
+    pub spoken: u32,
+    pub engaged: u32,
+    pub ignored: u32,
+    pub rejected: u32,
+}
+
 /// What one session came to: aggregates and game facts, nothing else (see
 /// the module's notes, and [`RECORD_FIELDS`]).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -460,6 +478,10 @@ pub struct SessionStats {
     /// The coach's looks at the game, and the lines it said.
     pub coach_looks: u32,
     pub coach_lines: u32,
+    /// Its thoughts of its own, and where the player's dial for them stood
+    /// at the end ("quiet", "normal", "talkative"; None: they were off).
+    pub thoughts: Thoughts,
+    pub initiative: Option<String>,
     /// How it talked: "friendly", "blunt" or "savage".
     pub attitude: String,
     /// The phone's language ("he"; no region).
@@ -1609,6 +1631,13 @@ impl Stats {
         record
     }
 
+    /// What the thoughts of its own came to so far, and the dial (None:
+    /// off).
+    pub fn thoughts(&mut self, thoughts: Thoughts, initiative: Option<&str>) {
+        self.record.thoughts = thoughts;
+        self.record.initiative = initiative.map(str::to_string);
+    }
+
     /// Every [`SNAPSHOT_EVERY`] seconds: the session so far, written.
     pub fn save_every(&mut self, coach: &Coach, language: Option<&str>) {
         if self.now - self.saved_at >= SNAPSHOT_EVERY {
@@ -1722,6 +1751,13 @@ mod tests {
             clip_minutes: 20,
             coach_looks: 30,
             coach_lines: 9,
+            thoughts: Thoughts {
+                spoken: 6,
+                engaged: 3,
+                ignored: 2,
+                rejected: 1,
+            },
+            initiative: Some("normal".into()),
             attitude: "savage".into(),
             language: Some("he".into()),
             version: "0.9.0".into(),

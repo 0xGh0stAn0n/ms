@@ -132,40 +132,6 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                     events.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n");
                                     Response::new(200, "text/event-stream", events.into_bytes())
                                 }
-                                // A model that answers from the snapshot it was
-                                // given (HP 40%, or 12% for the coach) while the
-                                // game has moved on.
-                                // A look that takes 9 s.
-                                Some(_) if body["input"].to_string().contains("slow-look") => {
-                                    std::thread::sleep(Duration::from_secs(9));
-                                    Response::json(
-                                        200,
-                                        &json!({"output": [{"type": "message", "role": "assistant", "content": [
-                                            {"type": "output_text", "text": "Kill the blue snail."}
-                                        ]}]}),
-                                    )
-                                }
-                                Some(_) if body["input"].to_string().contains("stale-hp") => {
-                                    let text = if body["input"].to_string().contains("coach-look") {
-                                        "Drink a potion, you're at 12% HP. Nice dodge on that last hit."
-                                    } else {
-                                        "Your HP is at 40%. Keep going."
-                                    };
-                                    if body["stream"] == true {
-                                        let events = format!(
-                                            "event: response.output_text.delta\ndata: {}\n\nevent: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{}}}}\n\n",
-                                            json!({"type": "response.output_text.delta", "delta": text})
-                                        );
-                                        Response::new(200, "text/event-stream", events.into_bytes())
-                                    } else {
-                                        Response::json(
-                                            200,
-                                            &json!({"output": [{"type": "message", "role": "assistant", "content": [
-                                                {"type": "output_text", "text": text}
-                                            ]}]}),
-                                        )
-                                    }
-                                }
                                 Some(model) if body["stream"] == true => {
                                     let last = body["input"]
                                         .as_array()
@@ -334,6 +300,32 @@ The quest marker is four maps to the left. Go!"
                                         ]}]}),
                                     )
                                 }
+                                // The mind's thoughts: one for the first hook
+                                // the input names, one that asks (dropped), and
+                                // a plan.
+                                Some(_) if body["text"]["format"]["name"] == "thoughts" => {
+                                    let input = body["input"][0]["content"].as_str().unwrap_or("");
+                                    let hook = input
+                                        .split("id \"")
+                                        .nth(1)
+                                        .and_then(|rest| rest.split('"').next())
+                                        .unwrap_or("none");
+                                    let answer = json!({
+                                        "thoughts": [
+                                            {"hook": hook, "kind": "opinion", "weighed": "fits the moment; fresh", "text": "יואו, הפסנתר של היער הזה הכי יפה במשחק.", "rating": 4.5, "hum": true},
+                                            {"hook": hook, "kind": "quip", "weighed": "a question", "text": "Nice here, right?", "rating": 4.0, "hum": false}
+                                        ],
+                                        "plan": {"goal": "level 30", "next": "the Kerning City party quest", "why": "fast EXP with a party"}
+                                    });
+                                    Response::json(
+                                        200,
+                                        &json!({"output": [
+                                            {"type": "message", "role": "assistant", "content": [
+                                                {"type": "output_text", "text": answer.to_string()}
+                                            ]}
+                                        ]}),
+                                    )
+                                }
                                 // The learner's look back: the notebook, updated.
                                 Some(_) if body["text"]["format"]["name"] == "notebook" => {
                                     let notebook = json!({
@@ -394,6 +386,58 @@ The quest marker is four maps to the left. Go!"
                                     pcm.extend_from_slice(&(i % 100).to_le_bytes());
                                 }
                                 Response::new(200, "application/octet-stream", pcm)
+                            }
+                            // Written down: a form with the model, the
+                            // language and a WAV file in it. How sure it was
+                            // comes when asked for (whisper-1 can't say);
+                            // at a silent WAV it guesses, unsure.
+                            "/v1/audio/transcriptions" => {
+                                let form = String::from_utf8_lossy(&req.body).to_string();
+                                let field = |name: &str| {
+                                    form.split(&format!("name=\"{name}\"\r\n\r\n"))
+                                        .nth(1)
+                                        .and_then(|rest| rest.split("\r\n").next())
+                                        .unwrap_or_default()
+                                        .to_string()
+                                };
+                                let wav = form.contains("filename=\"said.wav\"")
+                                    && form.contains("Content-Type: audio/wav")
+                                    && form.contains("RIFF")
+                                    && form.contains("WAVE");
+                                if !req
+                                    .header("content-type")
+                                    .unwrap_or_default()
+                                    .starts_with("multipart/form-data")
+                                    || !wav
+                                {
+                                    Response::json(
+                                        400,
+                                        &json!({"error": {"message": "no audio file"}}),
+                                    )
+                                } else if field("include[]") == "logprobs"
+                                    && field("model") == "whisper-1"
+                                {
+                                    Response::json(
+                                        400,
+                                        &json!({"error": {"message": "logprobs is not supported"}}),
+                                    )
+                                } else {
+                                    let silent = silent_wav(&req.body);
+                                    let text = if silent {
+                                        "a guess".to_string()
+                                    } else {
+                                        format!("די ({} in {})", field("model"), field("language"))
+                                    };
+                                    let mut answer = json!({"text": format!(" {text} ")});
+                                    if field("include[]") == "logprobs" {
+                                        let logprob = if silent { -2.0 } else { -0.05 };
+                                        answer["logprobs"] = json!([
+                                            {"token": "a", "logprob": logprob, "bytes": [97]},
+                                            {"token": "b", "logprob": logprob, "bytes": [98]}
+                                        ]);
+                                    }
+                                    Response::json(200, &answer)
+                                }
                             }
                             _ => {
                                 Response::json(404, &json!({"error": {"message": "no such path"}}))
@@ -473,6 +517,64 @@ fn a_streamed_reply_arrives_in_pieces_after_the_same_fallbacks() {
 }
 
 #[test]
+fn a_reply_is_over_once_its_voice_is_all_handed_over() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let id = worker.send(Job::Converse {
+        heard: "can you see my game".into(),
+        snapshot: "HP is about 80%.".into(),
+        facts: Default::default(),
+        speak: true,
+        eyes: None,
+        language: None,
+    });
+    // Its words, then its voice line by line — and only then is it over:
+    // the main loop knows nothing more of it is coming.
+    let (mut replied, mut ends) = (false, 0);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id: of, .. }) if of == id => replied = true,
+            Ok(Done::Audio { id: of, end, .. }) if of == id => ends += usize::from(end),
+            Ok(Done::Voiced { id: of }) if of == id => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(replied);
+    assert_eq!(ends, 2, "both lines' voices came before it was over");
+    // Nothing of it comes after.
+    while let Ok(done) = worker.done.recv_timeout(Duration::from_millis(300)) {
+        match done {
+            Done::Audio { id: of, .. } | Done::Reply { id: of, .. } => assert_ne!(of, id),
+            _ => {}
+        }
+    }
+    // A line it is handed to say is over once said, like a reply.
+    let line = worker.send(Job::Say {
+        heard: None,
+        text: "Go left.".into(),
+    });
+    let mut said = false;
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id: of, end: true, ..
+            }) if of == line => said = true,
+            Ok(Done::Voiced { id: of }) if of == line => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(said);
+}
+
+#[test]
 fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
     if !have_curl() {
         return;
@@ -492,7 +594,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
     // Each line: its words, whether it was the first, its samples, closed.
     let mut lines: Vec<(String, bool, usize, bool)> = Vec::new();
     while reply.is_none() || lines.len() < 2 || !lines.iter().all(|l| l.3) {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id: of, text, .. }) => {
                 assert_eq!(of, id);
                 reply = Some(text)
@@ -522,9 +624,13 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::Shown { text, .. }) => panic!("shown: {text}"),
             Ok(Done::Command { word }) => panic!("command: {word}"),
             Ok(Done::Warn { what, .. }) => panic!("warn: {what}"),
+            Ok(Done::Tone { id }) => panic!("tone: {id}"),
+            Ok(Done::Initiative { id }) => panic!("initiative: {id}"),
+            Ok(Done::Language { locale }) => panic!("language: {locale}"),
             Ok(Done::LookUp { question, .. }) => panic!("look-up: {question}"),
             Ok(Done::Coached { label, .. }) => panic!("coached: {label}"),
             Ok(Done::Rewrite { instruction }) => panic!("rewrite: {instruction}"),
+            Ok(Done::Voiced { .. }) => {}
             Err(e) => panic!("{e}: {reply:?} {lines:?}"),
         }
     }
@@ -632,6 +738,71 @@ fn a_request_is_called_off_at_once() {
 }
 
 #[test]
+fn what_was_said_over_its_voice_is_written_down_from_the_microphone() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    // A second of the phone's microphone, as a WAV, in a form: what was
+    // said, and how sure the transcriber was of it.
+    let wav = ms::ai::wav_bytes(&[300i16; 24_000], 24_000);
+    let written = ai
+        .transcribe(
+            ms::ai::live::TRANSCRIBE_MODEL,
+            &wav,
+            Some("he-IL"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(written.text, "די (gpt-4o-mini-transcribe in he)");
+    assert!(
+        written.logprob.is_some_and(|p| (p + 0.05).abs() < 1e-9),
+        "{written:?}"
+    );
+    // A model that can't say how sure it was is asked again without.
+    let plain = ai
+        .transcribe("whisper-1", &wav, Some("he-IL"), Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(plain.text, "די (whisper-1 in he)");
+    assert_eq!(plain.logprob, None);
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["path"] == "/v1/audio/transcriptions")
+    );
+    // A refused key is said so.
+    let refused = OpenAi::new("sk-not-the-key-0123456789abcdef", &base, "cedar", None);
+    assert!(matches!(
+        refused.transcribe(
+            "gpt-4o-mini-transcribe",
+            &wav,
+            None,
+            Duration::from_secs(10)
+        ),
+        Err(AiError::Http(401, _))
+    ));
+    // In the background, for the main loop: the moment it was about, and
+    // the words.
+    let (listener, written) = ms::ai::talkover::Listener::new(Arc::new(ai));
+    let at = Instant::now();
+    listener.listen(at, vec![300i16; 12_000], 24_000, Some("he".into()));
+    let got = written.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(got.at, at);
+    assert_eq!(
+        got.words,
+        Ok("די (gpt-4o-mini-transcribe in he)".to_string())
+    );
+    assert_eq!(got.guessed, None);
+    // A sound with no words: what the transcriber guessed is nothing said.
+    listener.listen(at, vec![0i16; 12_000], 24_000, Some("he".into()));
+    let got = written.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(got.words, Ok(String::new()));
+    assert_eq!(got.guessed.as_deref(), Some("a guess"));
+}
+
+#[test]
 fn a_reply_talked_over_stops_and_the_next_is_answered() {
     if !have_curl() {
         return;
@@ -662,7 +833,7 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
     });
     assert!(!worker.cancelled(next));
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(10)) {
+        match next_done(&worker, Duration::from_secs(10)) {
             Ok(Done::Reply { id, text, .. }) => {
                 assert_eq!(id, next, "the call-off reply came back: {text}");
                 assert!(text.ends_with("you said: how am I doing."), "{text}");
@@ -702,7 +873,7 @@ fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
     // sentence, which is made slowly; the player talks over it there.
     let first = ask("where am I");
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id,
                 kind,
@@ -729,7 +900,7 @@ fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
     // said: not silence, and not the sentence that was said.
     let second = ask("where am I");
     let text = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text, .. }) if id == second => break text,
             Ok(Done::Silent { id, heard }) if id == second => panic!("silent: {heard}"),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -762,7 +933,7 @@ fn the_same_question_twice_gets_a_word_not_silence() {
     // waits for the voice to finish.)
     let first = ask("where am I");
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text, .. }) => {
                 assert_eq!(id, first);
                 assert_eq!(
@@ -783,7 +954,7 @@ The quest marker is four maps to the left. Go!"
     let second = ask("where am I");
     let (mut reply, mut spoken) = (None, None);
     while reply.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text, .. }) if id == second => reply = Some(text),
             Ok(Done::Audio {
                 id,
@@ -817,99 +988,12 @@ The quest marker is four maps to the left. Go!"
 
 /// What came of reply `id`: its text (None: it was silent), the lines its
 /// voice began, and the notes that came with it, once the voice is done.
-#[test]
-fn what_is_said_of_a_bar_is_as_it_is_when_said() {
-    if !have_curl() {
-        return;
-    }
-    let (base, _) = fake();
-    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
-    let worker = ms::ai::spawn(ai, Brain::new());
-    let facts = |hp: f32| ms::ai::brain::Facts {
-        hp: Some(hp),
-        ..Default::default()
-    };
-    // Asked at 40%; by the time the answer is said, HP is 52%.
-    *worker.now.lock().unwrap() = facts(52.0);
-    let id = worker.send(Job::Converse {
-        heard: "stale-hp is my health ok".into(),
-        snapshot: "HP about 40%".into(),
-        facts: facts(40.0),
-        speak: true,
-        eyes: None,
-        language: None,
-    });
-    let (_, spoken, _) = outcome(&worker, id);
-    assert_eq!(spoken.join(" "), "Your HP is at 52%. Keep going.");
-    // The coach looked at 12%; HP is back at 100%: the potion is left out.
-    *worker.now.lock().unwrap() = facts(100.0);
-    let id = worker.send(Job::Coach {
-        reason: "coach-look".into(),
-        label: "look".into(),
-        snapshot: "stale-hp coach-look HP about 12%".into(),
-        facts: facts(12.0),
-        eyes: None,
-        said: Vec::new(),
-        language: None,
-        speak: true,
-    });
-    loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)).unwrap() {
-            Done::Coached { id: of, text, .. } if of == id => {
-                assert_eq!(text.as_deref(), Some("Nice dodge on that last hit."));
-                break;
-            }
-            Done::Failed { error, .. } => panic!("{error}"),
-            _ => {}
-        }
-    }
-}
-
-#[test]
-fn a_coach_line_ready_long_after_its_look_is_left_out() {
-    if !have_curl() {
-        return;
-    }
-    let (base, _) = fake();
-    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
-    let worker = ms::ai::spawn(ai, Brain::new());
-    let id = worker.send(Job::Coach {
-        reason: "slow-look".into(),
-        label: "look".into(),
-        snapshot: String::new(),
-        facts: Default::default(),
-        eyes: None,
-        said: Vec::new(),
-        language: None,
-        speak: true,
-    });
-    let mut notes = Vec::new();
-    loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)).unwrap() {
-            Done::Noted { line } => notes.push(line),
-            Done::Coached { id: of, text, .. } if of == id => {
-                assert_eq!(text, None);
-                break;
-            }
-            Done::Audio { text, .. } => panic!("said: {text}"),
-            Done::Failed { error, .. } => panic!("{error}"),
-            _ => {}
-        }
-    }
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.contains("left out, ready") && n.contains("blue snail")),
-        "{notes:?}"
-    );
-}
-
 fn outcome(worker: &ms::ai::Worker, id: u64) -> (Option<String>, Vec<String>, Vec<String>) {
     let (mut text, mut done, mut spoken, mut notes) = (None, false, Vec::new(), Vec::new());
     loop {
         // (After the reply, a moment for the rest of its voice.)
         let wait = Duration::from_secs(if done { 1 } else { 30 });
-        match worker.done.recv_timeout(wait) {
+        match next_done(worker, wait) {
             Ok(Done::Reply {
                 id: of, text: t, ..
             }) if of == id => {
@@ -1084,7 +1168,7 @@ fn a_warning_waits_two_seconds_for_its_translation_then_is_said_in_english() {
         show: true,
         speak: false,
     });
-    match worker.done.recv_timeout(Duration::from_secs(8)) {
+    match next_done(&worker, Duration::from_secs(8)) {
         Ok(Done::Shown { text, kind }) => {
             assert_eq!(kind, ms::companion::Kind::Warning);
             assert_eq!(text, line);
@@ -1114,7 +1198,7 @@ fn a_line_that_comes_back_with_another_number_is_translated_once() {
             show: true,
             speak: false,
         });
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => text,
             other => panic!("{}", describe(other)),
         }
@@ -1211,7 +1295,7 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     let mut shown = None;
     let mut spoken = None;
     while shown.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Alert);
                 shown = Some(text);
@@ -1263,7 +1347,7 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     loop {
         if let Ok(Done::Audio {
             text, start: true, ..
-        }) = worker.done.recv_timeout(Duration::from_secs(30))
+        }) = next_done(&worker, Duration::from_secs(30))
         {
             assert_eq!(text, "Level up! Nice.");
             break;
@@ -1275,6 +1359,241 @@ fn its_own_lines_are_translated_shown_and_spoken() {
             .iter()
             .all(|r| r["path"] == "/v1/audio/speech")
     );
+}
+
+#[test]
+fn a_hum_is_handed_over_as_sound_with_its_name_first_and_no_model_in_the_way() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let melody = ms::intuition::vocal::Melodies::get()
+        .named("morning-leaf")
+        .unwrap();
+    let samples = ms::intuition::vocal::hum(melody);
+    let id = worker.send(Job::Play {
+        samples: samples.clone(),
+        kind: ms::companion::Kind::Info,
+        label: melody.title.clone(),
+    });
+    let mut heard = 0usize;
+    let mut label = None;
+    let mut ended = false;
+    while !ended {
+        match next_done(&worker, Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id: got,
+                text,
+                kind,
+                samples: piece,
+                start,
+                end,
+                ..
+            }) => {
+                assert_eq!(got, id);
+                assert_eq!(kind, ms::companion::Kind::Info);
+                if start {
+                    label = Some(text);
+                }
+                if end {
+                    ended = true;
+                }
+                heard += piece.len();
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(heard, samples.len());
+    assert_eq!(label.as_deref(), Some("Morning Leaf"));
+    // Then nothing more (the job's end itself, `Voiced`, is passed over by
+    // `next_done`), and its own sound asked nothing of any model.
+    assert!(next_done(&worker, Duration::from_millis(300)).is_err());
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[test]
+fn the_standing_plan_goes_into_the_replys_instructions_after_what_it_learned() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let plan = ms::intuition::mind::Plan {
+        goal: "level 30".into(),
+        next: "the Kerning City party quest".into(),
+        why: "fast EXP at this level".into(),
+        level: Some(24),
+    };
+    worker.send(Job::Plan {
+        text: Some(plan.prompt()),
+    });
+    let id = worker.send(Job::Converse {
+        heard: "what should I do now?".into(),
+        snapshot: "Level 24.".into(),
+        facts: ms::ai::brain::Facts::default(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let (reply, _, _) = outcome(&worker, id);
+    assert!(reply.is_some());
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    let instructions = asked["body"]["instructions"].as_str().unwrap().to_string();
+    assert!(
+        instructions.contains("next — the Kerning City party quest"),
+        "{instructions}"
+    );
+    // The plan comes after the persona, so the cached part stays cached.
+    assert!(
+        instructions.find("You are MapleSyrup").unwrap() < instructions.find("next — ").unwrap()
+    );
+    // Dropped, it is gone from the next reply.
+    worker.send(Job::Plan { text: None });
+    let before = seen.lock().unwrap().len();
+    let id = worker.send(Job::Converse {
+        heard: "and now?".into(),
+        snapshot: "Level 24.".into(),
+        facts: ms::ai::brain::Facts::default(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let _ = outcome(&worker, id);
+    let requests = seen.lock().unwrap();
+    let again = requests[before..]
+        .iter()
+        .find(|r| r["path"] == "/v1/responses")
+        .unwrap();
+    assert!(
+        !again["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("next — ")
+    );
+}
+
+#[test]
+fn the_mind_thinks_a_cue_through_in_the_background_and_hands_back_thoughts_and_a_plan() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let settings = scratch("mind");
+    std::fs::write(
+        settings.join("about-me.txt"),
+        "- Their main is a Night Lord.\n",
+    )
+    .unwrap();
+    let learning = ms::ai::Learning::load(&settings);
+    let ai = Arc::new(OpenAi::new(
+        "sk-test-key-0123456789abcdef",
+        &base,
+        "cedar",
+        None,
+    ));
+    let mind = ms::intuition::mind::Mind::spawn(ai, learning).expect("a mind");
+    let world = ms::intuition::World {
+        now: 300.0,
+        seen: true,
+        place: Some(ms::intuition::Place {
+            name: "Ellinia".into(),
+            age_s: 2.0,
+        }),
+        level: Some(27),
+        classic: true,
+        ..ms::intuition::World::default()
+    };
+    mind.think(
+        ms::intuition::Cue {
+            trigger: ms::intuition::Trigger::MapEntered,
+            hooks: vec!["ellinia-music".into()],
+            world: world.clone(),
+            tempo: ms::intuition::Tempo::Calm,
+            plan: true,
+        },
+        ms::intuition::mind::Context {
+            language: Some("he-IL".into()),
+            snapshot: "Level 27. HP 100%.".into(),
+            plan: None,
+            lately: vec!["where to now".into()],
+        },
+    );
+    let started = Instant::now();
+    let mut came = Vec::new();
+    while came.len() < 2 && started.elapsed() < Duration::from_secs(30) {
+        came.extend(mind.drain());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(came.len(), 2, "{came:?}");
+    let ms::intuition::mind::Thinking::Thoughts(thoughts) = &came[0] else {
+        panic!("{came:?}");
+    };
+    // The question was dropped; the opinion kept, on the map's basis, with
+    // the hook's tune since the mind felt like humming.
+    assert_eq!(thoughts.len(), 1, "{thoughts:?}");
+    let t = &thoughts[0];
+    assert_eq!(t.id, 1);
+    assert_eq!(t.hook, "ellinia-music");
+    assert_eq!(t.kind, ms::intuition::Kind::Opinion);
+    assert!((t.rating - 4.5).abs() < 1e-6);
+    assert_eq!(t.basis.map.as_deref(), Some("Ellinia"));
+    assert_eq!(t.hum.as_deref(), Some("morning-leaf"));
+    assert!(t.text.contains("הפסנתר"));
+    let ms::intuition::mind::Thinking::Plan(plan) = &came[1] else {
+        panic!("{came:?}");
+    };
+    assert_eq!(plan.next, "the Kerning City party quest");
+    assert_eq!(plan.level, Some(27));
+    // The request that was answered (the stand-in turns the first model
+    // and the reasoning setting away first, like OpenAI does for a key
+    // without them): in the strict schema, with the persona, the guide,
+    // the moment, the hook's facts, the taste card and what they said
+    // lately.
+    let requests = seen.lock().unwrap();
+    let asked: Vec<&Value> = requests
+        .iter()
+        .filter(|r| r["path"] == "/v1/responses")
+        .collect();
+    assert!(
+        asked
+            .iter()
+            .all(|r| r["body"]["text"]["format"]["name"] == "thoughts"),
+        "nothing but the mind asked"
+    );
+    let body = &asked.last().unwrap()["body"];
+    assert_eq!(body["model"], "gpt-6.1-sol");
+    assert_eq!(body["text"]["format"]["name"], "thoughts");
+    assert_eq!(body["text"]["format"]["strict"], true);
+    assert_eq!(body["max_output_tokens"], 900);
+    let instructions = body["instructions"].as_str().unwrap();
+    assert!(
+        instructions.contains("You are MapleSyrup"),
+        "{instructions}"
+    );
+    assert!(instructions.contains("nobody is talking to you"));
+    let input = body["input"][0]["content"].as_str().unwrap();
+    assert!(input.contains("The map: Ellinia."), "{input}");
+    assert!(
+        input.contains("Night Lord"),
+        "what it knows of the player: {input}"
+    );
+    assert!(input.contains("id \"ellinia-music\""));
+    assert!(input.contains("When The Morning Comes"));
+    assert!(input.contains("you love it"));
+    assert!(input.contains("where to now"));
+    assert!(input.contains("Hebrew"));
+    let _ = std::fs::remove_dir_all(&settings);
 }
 
 #[test]
@@ -1316,7 +1635,7 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
     assert!(!worker.cancelled(alert));
     let (mut shown, mut spoken) = (None, None);
     while shown.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Warning);
                 shown = Some(text);
@@ -1340,7 +1659,7 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
     );
     assert_eq!(spoken, shown);
     // The other line of its own went with the call-off: nothing of it comes.
-    while let Ok(done) = worker.done.recv_timeout(Duration::from_millis(500)) {
+    while let Ok(done) = next_done(&worker, Duration::from_millis(500)) {
         match done {
             Done::Audio { id, .. } => assert_eq!(id, alert),
             Done::Failed { id, .. } => assert_eq!(id, slow),
@@ -1366,7 +1685,7 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
         speak: true,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id,
                 kind,
@@ -1391,7 +1710,7 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
         language: None,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, .. }) if id == reply => break,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -1436,7 +1755,6 @@ fn a_warning_never_waits_for_a_look() {
     let worker = ms::ai::spawn(ai, Brain::new());
     // A look under way that takes three seconds (a slow day)…
     let look = worker.send(Job::Coach {
-        facts: Default::default(),
         reason: "They just arrived somewhere new (think it over).".into(),
         label: "new scene".into(),
         snapshot: "HP 80%".into(),
@@ -1457,7 +1775,7 @@ fn a_warning_never_waits_for_a_look() {
     });
     let (mut order, mut alert_after) = (Vec::new(), None);
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id, start: true, ..
             }) => {
@@ -1501,7 +1819,7 @@ fn a_line_of_its_own_called_off_before_a_sound_was_not_said() {
         text: "Hello there, my friend! This takes forever.".into(),
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => {
                 assert_eq!(text, "Hello there, my friend! This takes forever.");
                 break;
@@ -1526,7 +1844,7 @@ fn a_line_of_its_own_called_off_before_a_sound_was_not_said() {
     });
     let (mut text, mut notes) = (None, Vec::new());
     while text.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text: t, .. }) if id == reply => text = Some(t),
             Ok(Done::Noted { line }) => notes.push(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -1552,7 +1870,6 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     let worker = ms::ai::spawn(ai, Brain::new());
     let look = |speak: bool| {
         worker.send(Job::Coach {
-            facts: Default::default(),
             reason: "They just arrived somewhere new (voice hangs).".into(),
             label: "new scene".into(),
             snapshot: "HP 80%".into(),
@@ -1566,7 +1883,7 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     // (the look is called off) before a sound of it was made.
     let first = look(true);
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => {
                 assert_eq!(text, "Rebuff, you're naked, this takes forever.");
                 break;
@@ -1579,7 +1896,7 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     std::thread::sleep(Duration::from_millis(300));
     worker.cancel(first);
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Coached { id, .. }) if id == first => break,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -1591,7 +1908,7 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     let second = look(false);
     let (mut said, mut notes) = (None, Vec::new());
     while said.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Coached { id, text, .. }) if id == second => said = Some(text),
             Ok(Done::Noted { line }) => notes.push(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -1617,7 +1934,6 @@ fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
     let worker = ms::ai::spawn(ai, Brain::new());
     let look = |reason: &str| {
         worker.send(Job::Coach {
-            facts: Default::default(),
             reason: reason.into(),
             label: "a look".into(),
             snapshot: "HP 80%".into(),
@@ -1636,7 +1952,7 @@ fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
     worker.cancel_all();
     let mut came_back = Vec::new();
     while came_back.len() < 2 {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Coached {
                 id,
                 text,
@@ -1655,7 +1971,7 @@ fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
     );
     // A look that came back with nothing is nothing to say, not called off.
     let quiet = look("Nothing in particular happened (nothing is happening).");
-    match worker.done.recv_timeout(Duration::from_secs(30)) {
+    match next_done(&worker, Duration::from_secs(30)) {
         Ok(Done::Coached {
             id,
             text,
@@ -1692,7 +2008,7 @@ fn two_lines_pieces_are_never_shuffled_together() {
     let mut pieces: Vec<(u64, bool, bool)> = Vec::new();
     let mut ended = 0;
     while ended < 2 {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio { id, start, end, .. }) => {
                 pieces.push((id, start, end));
                 if end {
@@ -1728,7 +2044,6 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     let worker = ms::ai::spawn(ai, Brain::new());
     // A look at a quiet game: nothing to say, nothing shown or spoken.
     let quiet = worker.send(Job::Coach {
-        facts: Default::default(),
         reason:
             "Nothing in particular happened (nothing is happening); a callout only if deserved."
                 .into(),
@@ -1739,7 +2054,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
         language: None,
         speak: true,
     });
-    match worker.done.recv_timeout(Duration::from_secs(30)) {
+    match next_done(&worker, Duration::from_secs(30)) {
         Ok(Done::Coached {
             id,
             text,
@@ -1756,7 +2071,6 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     }
     // Somewhere new: a line, shown as an alert, said, and reported.
     let scene = worker.send(Job::Coach {
-        facts: Default::default(),
         reason: "They just arrived somewhere new.".into(),
         label: "new scene".into(),
         snapshot: "HP 80%".into(),
@@ -1767,7 +2081,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     });
     let (mut shown, mut spoken, mut coached) = (None, None, None);
     while shown.is_none() || spoken.is_none() || coached.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Alert);
                 shown = Some(text);
@@ -1835,7 +2149,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
         language: None,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { .. }) => break,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -1866,10 +2180,47 @@ fn describe(done: Result<Done, std::sync::mpsc::RecvTimeoutError>) -> String {
         Ok(Done::Shown { text, .. }) => format!("shown: {text}"),
         Ok(Done::Command { word }) => format!("command: {word}"),
         Ok(Done::Warn { what, .. }) => format!("warn: {what}"),
+        Ok(Done::Tone { id }) => format!("tone: {id}"),
+        Ok(Done::Initiative { id }) => format!("initiative: {id}"),
+        Ok(Done::Language { locale }) => format!("language: {locale}"),
         Ok(Done::LookUp { question, .. }) => format!("look-up: {question}"),
         Ok(Done::Coached { label, text, .. }) => format!("coached: {label}: {text:?}"),
         Ok(Done::Rewrite { instruction }) => format!("rewrite: {instruction}"),
+        Ok(Done::Voiced { id }) => format!("voiced: {id}"),
         Err(e) => e.to_string(),
+    }
+}
+
+/// Whether the WAV in a form's body holds nothing but silence.
+fn silent_wav(body: &[u8]) -> bool {
+    let find = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
+    let Some(wave) = find(body, b"WAVE") else {
+        return false;
+    };
+    let Some(data) = find(&body[wave..], b"data").map(|at| wave + at) else {
+        return false;
+    };
+    let size = u32::from_le_bytes(body[data + 4..data + 8].try_into().unwrap()) as usize;
+    body[data + 8..(data + 8 + size).min(body.len())]
+        .iter()
+        .all(|b| *b == 0)
+}
+
+/// The worker's next word, past its "this job is over" (`Done::Voiced`),
+/// which the checks here look for only where they say so.
+fn next_done(
+    worker: &ms::ai::Worker,
+    wait: Duration,
+) -> Result<Done, std::sync::mpsc::RecvTimeoutError> {
+    let until = Instant::now() + wait;
+    loop {
+        match worker
+            .done
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
+            Ok(Done::Voiced { .. }) => {}
+            other => return other,
+        }
     }
 }
 
@@ -1903,7 +2254,7 @@ fn a_warning_is_spoken_with_urgency_and_a_reply_at_the_usual_pace() {
         let from = seen.lock().unwrap().len();
         worker.send(job);
         loop {
-            match worker.done.recv_timeout(Duration::from_secs(30)) {
+            match next_done(&worker, Duration::from_secs(30)) {
                 Ok(Done::Audio { end: true, .. }) => break,
                 Ok(Done::Failed { error, .. }) => panic!("{error}"),
                 Ok(_) => {}
@@ -2025,18 +2376,20 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         "- Their class is Night Lord.",
         &[],
         Some("he-IL"),
-        Default::default(),
+        ms::companion::spectrum::Spectrum::get().of_voice(Default::default()),
     );
     let tools = ms::ai::live::tools(vec![
         json!({"type": "function", "name": "remember_fact", "strict": true, "parameters": {}}),
         json!({"type": "function", "name": "look_it_up", "strict": true, "parameters": {}}),
     ]);
     // As it adapted to the player: a little less eager, their words; and
-    // quick speech.
+    // quick speech. A PC's browser across the desk, its language Hebrew.
     let tuning = ms::ai::live::Tuning {
         eagerness: "medium".into(),
         words: Some("MapleStory. Names and words the player uses: Zakum, MoonWalker77.".into()),
         speed: 1.15,
+        mic: ms::ai::live::Mic::Far,
+        language: Some("he".into()),
     };
     let call = live.session(&instructions, &tools, &tuning).unwrap();
     // The full model isn't there for this key: the smaller one is used.
@@ -2068,7 +2421,14 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         session["audio"]["input"]["turn_detection"]["eagerness"],
         "medium"
     );
-    assert!(session["audio"]["input"]["transcription"]["language"].is_null());
+    // What they say is written down in the phone's language; the noise is
+    // cleaned for a microphone across the desk; it thinks a little first.
+    assert_eq!(session["audio"]["input"]["transcription"]["language"], "he");
+    assert_eq!(
+        session["audio"]["input"]["noise_reduction"]["type"],
+        "far_field"
+    );
+    assert_eq!(session["reasoning"]["effort"], "low");
     assert!(
         session["audio"]["input"]["transcription"]["prompt"]
             .as_str()
@@ -2121,7 +2481,18 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
         "Easy Zakum needs level 50.",
         ms::ai::knowledge::Source::Player,
     );
-    learning.memory().attitude = ms::companion::Attitude::Savage;
+    // The bar set to savage on the page (a locked level: opened with the
+    // player's password).
+    {
+        let mut memory = learning.memory();
+        memory.tone = Some(
+            ms::companion::spectrum::Spectrum::get()
+                .of_voice(ms::companion::Attitude::Savage)
+                .id
+                .clone(),
+        );
+        memory.unlock("wild horses");
+    }
     let mut brain = Brain::new();
     brain.learning = Some(learning.clone());
     let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
@@ -2135,7 +2506,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
         language: None,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id: of, .. }) => {
                 assert_eq!(of, id);
                 break;
@@ -2161,12 +2532,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
     let learned = instructions
         .find("What you learned from playing together")
         .unwrap();
-    assert!(
-        learned
-            > instructions
-                .find("Without a picture you can't see the game")
-                .unwrap()
-    );
+    assert!(learned > instructions.find("you get no pictures").unwrap());
     assert!(instructions[learned..].contains("Night Lord"));
     assert!(
         instructions[learned..]
@@ -2230,7 +2596,7 @@ fn a_look_up_never_holds_the_answer_up_and_corrects_it_later() {
     });
     let (mut reply, mut look_up) = (None, None);
     while reply.is_none() || look_up.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id: of, text, .. }) => {
                 assert_eq!(of, id);
                 reply = Some(text);
@@ -2363,7 +2729,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
         language: None,
     });
     let text = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text, .. }) => break text,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -2403,7 +2769,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
     });
     let (mut text, mut noted) = (None, None);
     while text.is_none() || noted.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text: t, .. }) => text = Some(t),
             Ok(Done::Noted { line }) => noted = Some(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -2448,7 +2814,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
     ask("where to");
     let (mut reply, mut notes) = (None, Vec::new());
     while reply.is_none() || notes.len() < 2 {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text, .. }) => reply = Some(text),
             Ok(Done::Noted { line }) => notes.push(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -2475,7 +2841,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
     // The next question goes to OpenAI while Grok rests.
     ask("and now");
     let text = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text, .. }) => break text,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -2513,7 +2879,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
             language: None,
         });
         loop {
-            match worker.done.recv_timeout(Duration::from_secs(30)) {
+            match next_done(worker, Duration::from_secs(30)) {
                 Ok(Done::Reply { text, .. }) => break text,
                 Ok(Done::Silent { heard, .. }) => panic!("silent: {heard}"),
                 Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -2574,7 +2940,7 @@ fn the_hello_picks_up_from_last_time_when_it_knows_the_player() {
     let worker = ms::ai::spawn(ai, Brain::new());
     worker.send(Job::Greet { language: None });
     let shown = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Reply);
                 break text;
@@ -2604,7 +2970,7 @@ fn the_hello_picks_up_from_last_time_when_it_knows_the_player() {
     });
     let (mut shown, mut spoken) = (None, None);
     while shown.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => shown = Some(text),
             Ok(Done::Audio {
                 text, start: true, ..
@@ -2817,15 +3183,8 @@ fn last_reply_request(seen: &Arc<Mutex<Vec<Value>>>) -> Value {
         .unwrap()
 }
 
-fn close_to(color: [u8; 3], want: [u8; 3]) -> bool {
-    color
-        .iter()
-        .zip(want)
-        .all(|(a, b)| (*a as i32 - b as i32).abs() < 40)
-}
-
 #[test]
-fn a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat_does_not() {
+fn no_question_sends_a_picture_the_model_sees_the_game_through_its_vision_engine() {
     if !have_curl() {
         return;
     }
@@ -2839,7 +3198,7 @@ fn a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat
     let ask = |heard: &str| {
         let id = worker.send(Job::Converse {
             heard: heard.into(),
-            snapshot: "The MapleStory window is open and in view.".into(),
+            snapshot: "The MapleStory window is open and in view. Level 27, map Henesys.".into(),
             facts: Default::default(),
             speak: false,
             eyes: Some(eyes.clone()),
@@ -2849,69 +3208,29 @@ fn a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat
         assert!(reply.is_some(), "{heard}");
         last_reply_request(&seen)
     };
-    // The owner's questions about the screen (his real session).
-    let mut added = Vec::new();
+    // The owner's questions about the screen (his real session), his
+    // quests, and chit-chat: none sends a picture of the screen. The game
+    // goes as the vision engine reads it, and look_closer is how the model
+    // asks MapleSyrup's eyes for what that doesn't give.
     for heard in [
         "where am I",
         "I don't want money talk to me in English I don't want money I want to know what level am I and how do I look",
         "what's equipped look at what's equipped and tell me what to get",
         "Where are the blue mushroom",
+        "What's the next quest I should go to",
+        "hey",
+        "I need money",
     ] {
         let request = ask(heard);
-        let pictures = pictures_of(&request);
-        assert_eq!(pictures.len(), 4, "{heard}");
-        assert!(
-            pictures.iter().all(|p| p.0 == "high"),
-            "{heard}: {pictures:?}"
-        );
-        // The whole screen at 1280 across (rulers around it), then the
-        // minimap, the HUD and the middle at the frame's own pixels (the
-        // middle as OpenAI looks at it: 768 on its short side).
-        assert_eq!(pictures[0].1, (1280 + 44, 720 + 44));
-        assert_eq!(pictures[1].1, (922, 519));
-        assert!(close_to(pictures[1].2, [220, 30, 30]), "{:?}", pictures[1]);
-        assert_eq!(pictures[2].1, (1690, 216));
-        assert!(close_to(pictures[2].2, [30, 200, 30]), "{:?}", pictures[2]);
-        assert_eq!(pictures[3].1, (1050, 768));
-        assert!(close_to(pictures[3].2, [30, 30, 220]), "{:?}", pictures[3]);
-        // Each close-up says what it is.
+        assert!(pictures_of(&request).is_empty(), "{heard}");
         let words = request["body"]["input"].to_string();
-        assert!(words.contains("Close-up 1 of 3, full resolution: the minimap"));
-        assert!(words.contains("Close-up 2 of 3, full resolution: the HUD"));
-        assert!(
-            words.contains(
-                "Close-up 3 of 3, full resolution: the middle of the screen: his character"
-            )
-        );
-        // Told to read it off them, never to guess.
+        assert!(words.contains("read by your vision engine"), "{heard}");
+        assert!(words.contains("Level 27, map Henesys"), "{heard}");
         let instructions = request["body"]["instructions"].as_str().unwrap();
-        assert!(
-            instructions.contains("Read the answer off them, as a person reading the screen would")
-        );
-        assert!(instructions.contains("Use look_closer for anything still too small"));
+        assert!(instructions.contains("you get no pictures"));
+        assert!(instructions.contains("call look_closer with your question"));
         assert!(instructions.contains("never guess a map, a level or a look"));
-        added.push(pictures.iter().map(|p| p.3).sum::<usize>());
     }
-    // Asked about his quests (12:52:06): the Quest Helper too, top right.
-    let request = ask("What's the next quest I should go to");
-    let pictures = pictures_of(&request);
-    assert_eq!(pictures.len(), 5);
-    assert!(pictures.iter().all(|p| p.0 == "high"));
-    assert_eq!(pictures[4].1, (960, 648));
-    assert!(close_to(pictures[4].2, [230, 210, 40]), "{:?}", pictures[4]);
-    assert!(
-        request["body"]["input"]
-            .to_string()
-            .contains("Close-up 4 of 4, full resolution: the Quest Helper")
-    );
-    // Chit-chat: the small picture at low detail, as before.
-    for heard in ["hey", "I need money", "Mikael"] {
-        let pictures = pictures_of(&ask(heard));
-        assert_eq!(pictures.len(), 1, "{heard}");
-        assert_eq!(pictures[0].0, "low");
-        assert_eq!(pictures[0].1, (640 + 44, 360 + 44));
-    }
-    println!("bytes of pictures per question about the screen (painted 4K frame): {added:?}");
     // Where the vision engine found the HUD (another layout's, wider): the
     // HUD's close-up takes it in too.
     let found = ms::ai::Eyes {
@@ -3119,7 +3438,7 @@ fn a_look_up_never_speaks_a_second_answer_it_shows_it() {
     let mut shown = None;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        match worker.done.recv_timeout(Duration::from_millis(200)) {
+        match next_done(&worker, Duration::from_millis(200)) {
             Ok(Done::Shown { kind, text }) => shown = Some((kind, text)),
             Ok(Done::Audio { id: of, .. }) if of == id => panic!("a look-up's finding was said"),
             Ok(Done::Reply { .. }) => panic!("a look-up's finding became a reply"),
@@ -3133,7 +3452,7 @@ fn a_look_up_never_speaks_a_second_answer_it_shows_it() {
         text: "The workshop is done: restart to get it.".into(),
     });
     let said = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id: of,
                 start: true,
@@ -3170,7 +3489,7 @@ fn settings_change_only_when_his_own_words_plainly_ask() {
         });
         let mut got = Vec::new();
         loop {
-            match worker.done.recv_timeout(Duration::from_secs(30)) {
+            match next_done(&worker, Duration::from_secs(30)) {
                 Ok(Done::Reply { id: of, .. }) | Ok(Done::Silent { id: of, .. }) if of == id => {
                     break;
                 }

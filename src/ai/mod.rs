@@ -15,9 +15,12 @@
 //!
 //! The first words are heard while the rest is still being written, and
 //! the voice plays while it is still being made. Every job has a number;
-//! the player talking over MapleSyrup calls its work off (`Worker::cancel`):
-//! the request in flight is stopped at once, and only what was already
-//! said stays in the conversation.
+//! the player talking over MapleSyrup — or saying anything new — calls its
+//! work off (`Worker::cancel`): the request in flight is stopped at once,
+//! what waits is skipped, and only what was already said stays in the
+//! conversation. What the player said over its voice on the phone, where
+//! the phone does not listen, is written down from its microphone
+//! ([`talkover`]).
 //!
 //! The worker is two lanes. The thinking lane owns the conversation and
 //! does what needs it: replies, the coach's looks, the hello. The mouth
@@ -31,6 +34,7 @@
 //! to its own answers and the Windows voice.
 
 pub mod brain;
+pub mod cast;
 pub mod eleven;
 pub mod images;
 pub mod knowledge;
@@ -41,7 +45,9 @@ pub mod memory;
 pub mod openai;
 pub mod pronounce;
 pub mod style;
+pub mod talkover;
 pub mod teaching;
+pub mod thinker;
 pub mod tools;
 
 use std::path::{Path, PathBuf};
@@ -60,6 +66,7 @@ pub use openai::{AiError, Delivery, OpenAi};
 pub use tools::{Effect, Toolbox};
 
 use crate::companion::{Attitude, Kind};
+use crate::util::latency::{self, Key, Note, Stage};
 pub use openai::Stop;
 use openai::{Ask, Piece, Turn};
 
@@ -364,6 +371,17 @@ pub enum Job {
     /// spoken, and kept in the conversation (with `heard`, what it answers,
     /// when it answers something).
     Say { heard: Option<String>, text: String },
+    /// Play sound MapleSyrup made itself (a hum: `intuition::vocal`), 24 kHz
+    /// mono, on the mouth lane like one of its own lines: `label` is what
+    /// the phone shows for it.
+    Play {
+        samples: Vec<i16>,
+        kind: crate::companion::Kind,
+        label: String,
+    },
+    /// The standing plan changed (None: there is none): the conversation
+    /// suggests from it when asked what to do ([`Brain::set_plan`]).
+    Plan { text: Option<String> },
     /// Nobody said anything: the coach is watching the game and asks
     /// whether there is one line worth saying now (`reason`: why it asks,
     /// `label`: the same in a few words for the log), given what is on
@@ -373,9 +391,6 @@ pub enum Job {
         reason: String,
         label: String,
         snapshot: String,
-        /// What the snapshot says of the game: a line about a bar that has
-        /// moved since is dropped ([`brain::stale`]).
-        facts: brain::Facts,
         eyes: Option<Eyes>,
         said: Vec<String>,
         language: Option<String>,
@@ -395,6 +410,11 @@ pub enum Done {
     },
     /// The model judged the sentence was not for it.
     Silent { id: u64, heard: String },
+    /// Job `id` is over, its voice too: every piece of its speech was
+    /// handed over (`Audio`, before this), and no more will come — said,
+    /// failed, called off, or nothing to say. (A job called off before it
+    /// began says nothing at all.)
+    Voiced { id: u64 },
     /// Speech, a piece at a time as it is made: 24 kHz mono samples. A
     /// reply is spoken in a few lines (the first sentence alone, so it
     /// starts soon; then what was written meanwhile, together, so it
@@ -433,6 +453,14 @@ pub enum Done {
     /// The player asked to be warned at another HP or MP (`below`: the
     /// percent, 0 for never, None for the usual).
     Warn { what: String, below: Option<f32> },
+    /// The player asked it to talk another way: the bar moves to this
+    /// level.
+    Tone { id: String },
+    /// The player asked for another language: theirs from now on.
+    Language { locale: String },
+    /// The player asked it to speak up on its own more or less: the dial
+    /// moves to this level.
+    Initiative { id: String },
     /// Look `question` up in the background: `said` was the quick answer,
     /// `asked` whether the player asked for the look-up.
     LookUp {
@@ -458,9 +486,18 @@ pub enum Done {
 impl Job {
     /// Whether no call-off stops it: a warning's own line, or news (a
     /// death, a level-up) — what is still true after the player's words
-    /// ([`Kind::kept`]).
+    /// ([`Kind::kept`]) — what was heard of a reply cut short, which the
+    /// player's next words call everything off right after (the
+    /// conversation must still keep only what he heard), and the standing
+    /// plan, which is a state of the brain and not a line (dropped, the
+    /// brain would answer "what now?" without it until the mind thinks
+    /// again).
     fn kept(&self) -> bool {
-        matches!(self, Job::Speak { kind, .. } if kind.kept())
+        match self {
+            Job::Speak { kind, .. } => kind.kept(),
+            Job::Cut { .. } | Job::Plan { .. } => true,
+            _ => false,
+        }
     }
 }
 
@@ -471,7 +508,7 @@ const KEPT_REMEMBERED: usize = 64;
 
 /// What the thinking lane is handed: a job, or word from the mouth lane.
 enum Work {
-    Job(u64, Box<Job>),
+    Job(u64, Job),
     /// The mouth lane handed one of MapleSyrup's own lines to the voice
     /// (`kind`; `text` as said, in the player's language): the
     /// conversation keeps it, so the next reply knows its own last words.
@@ -490,9 +527,6 @@ pub struct Worker {
     pub done: Receiver<Done>,
     busy: Arc<AtomicBool>,
     pub model: Arc<std::sync::Mutex<Option<String>>>,
-    /// What the screen says now, kept up by the main loop: a reply's bars
-    /// are said as they are when it is heard ([`brain::freshen`]).
-    pub now: Arc<std::sync::Mutex<brain::Facts>>,
     /// The number the next job gets (from 1).
     next: AtomicU64,
     /// Jobs numbered up to this are called off.
@@ -514,8 +548,8 @@ impl Worker {
             }
         }
         let _ = match job {
-            Job::Speak { .. } => self.lines.send((id, job)).is_ok(),
-            job => self.jobs.send(Work::Job(id, Box::new(job))).is_ok(),
+            Job::Speak { .. } | Job::Play { .. } => self.lines.send((id, job)).is_ok(),
+            job => self.jobs.send(Work::Job(id, job)).is_ok(),
         };
         id
     }
@@ -615,7 +649,6 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
     let (tx, done) = channel::<Done>();
     let busy = Arc::new(AtomicBool::new(false));
     let model = Arc::new(std::sync::Mutex::new(None));
-    let now = Arc::new(std::sync::Mutex::new(brain::Facts::default()));
     let mark = Arc::new(AtomicU64::new(0));
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
     // One voice for both lanes; ElevenLabs failing is said once.
@@ -640,6 +673,19 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 // translated once.
                 let mut translations = Translations::default();
                 while let Ok((id, job)) = lines_rx.recv() {
+                    if let Job::Play {
+                        samples,
+                        kind,
+                        label,
+                    } = job
+                    {
+                        let stop = Stop::new(Arc::clone(&marks), id);
+                        if !stop.stopped() {
+                            play_sound(&floor, id, &stop, &samples, kind, &label, &tx);
+                        }
+                        let _ = tx.send(Done::Voiced { id });
+                        continue;
+                    }
                     let Job::Speak {
                         text,
                         language,
@@ -689,10 +735,9 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 }
             });
     }
-    let (busy_flag, model_slot, now_slot, marks, kept_jobs) = (
+    let (busy_flag, model_slot, marks, kept_jobs) = (
         Arc::clone(&busy),
         Arc::clone(&model),
-        Arc::clone(&now),
         Arc::clone(&mark),
         Arc::clone(&kept),
     );
@@ -717,10 +762,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 // main loop folds what came before into it.
                 let newest = queue
                     .iter()
-                    .rposition(|work| matches!(work, Work::Job(_, job) if matches!(**job, Job::Converse { .. })));
+                    .rposition(|work| matches!(work, Work::Job(_, Job::Converse { .. })));
                 for (i, work) in queue.into_iter().enumerate() {
                     let (id, job) = match work {
-                        Work::Job(id, job) => (id, *job),
+                        Work::Job(id, job) => (id, job),
                         Work::Said { kind, text } => {
                             brain.watched(label_of(kind), &text);
                             continue;
@@ -746,6 +791,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         }
                         continue;
                     }
+                    latency::TRACER.stamp(Key::Job(id), Stage::Lane);
                     // The voice the player picked, when it's ElevenLabs's.
                     let voice_id = brain.voice_id();
                     let mouth = Mouth {
@@ -781,6 +827,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             &mut |said| brain.watched(label_of(kind), said),
                         ),
                         Job::Cut { heard } => brain.cut_short(&heard),
+                        Job::Plan { text } => brain.set_plan(text),
+                        // (A sound goes to the mouth lane: `Worker::send`
+                        // routes it there. One that gets here is played all
+                        // the same.)
+                        Job::Play {
+                            samples,
+                            kind,
+                            label,
+                        } => play_sound(&floor, id, &stop, &samples, kind, &label, &tx),
                         Job::Greet { language } => greet(
                             fast.as_ref().unwrap_or(openai),
                             mouth,
@@ -793,7 +848,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         // A look-up's finding is shown on the phone, never
                         // said: one answer, not two.
                         Job::Say { heard: None, text } if lookup::shown_only(&text) => {
-                            let text = brain::for_speech(&text);
+                            let text = brain::for_speech(&brain.fill(&text));
                             if !text.is_empty() {
                                 let _ = tx.send(Done::Shown {
                                     kind: Kind::Info,
@@ -803,8 +858,11 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         }
                         Job::Say { heard, text } => {
                             let asked = Instant::now();
-                            let text = brain::for_speech(&text);
+                            // (Its slots filled with the values of now first:
+                            // the speech form drops their underscores.)
+                            let text = brain::for_speech(&brain.fill(&text));
                             if text.is_empty() {
+                                let _ = tx.send(Done::Voiced { id });
                                 continue;
                             }
                             if let Some(heard) = &heard {
@@ -859,8 +917,9 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             reason,
                             label,
                             snapshot,
-                            facts,
-                            eyes,
+                            // (The coach sees the game as the vision engine
+                            // reads it: no pictures.)
+                            eyes: _,
                             said,
                             language,
                             speak,
@@ -880,9 +939,6 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     reason: &reason,
                                     label,
                                     snapshot: &snapshot,
-                                    facts: &facts,
-                                    now: &now_slot,
-                                    eyes: eyes.as_ref(),
                                     said: &said,
                                     language: language.as_deref(),
                                     speak,
@@ -918,7 +974,6 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     heard,
                                     snapshot: &snapshot,
                                     facts: &facts,
-                                    now: &now_slot,
                                     eyes: eyes.as_ref(),
                                     speak,
                                     language: language.as_deref(),
@@ -960,6 +1015,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             }
                         }
                     }
+                    let _ = tx.send(Done::Voiced { id });
                 }
                 busy_flag.store(false, Ordering::Relaxed);
             }
@@ -970,7 +1026,6 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
         done,
         busy,
         model,
-        now,
         next: AtomicU64::new(1),
         mark,
         kept,
@@ -1091,8 +1146,15 @@ fn speak_line(
     }
     let style = brain::voice_style(delivery);
     let start = std::cell::Cell::new(true);
+    latency::TRACER.stamp(Key::Job(id), Stage::TtsSent);
+    if latency::TRACER.enabled() {
+        latency::TRACER.note(Key::Job(id), Note::Chars, &text.chars().count().to_string());
+    }
     let mut send = |samples: &[i16]| {
         let opens = start.replace(false);
+        if opens {
+            latency::TRACER.stamp(Key::Job(id), Stage::TtsFirst);
+        }
         let _ = tx.send(Done::Audio {
             id,
             kind: delivery.kind,
@@ -1108,12 +1170,16 @@ fn speak_line(
             end: false,
         });
     };
+    // (Which voice said it, for the timing: the first that made a sound.)
+    let mut voice_used = latency::TTS_OPENAI;
     let result = match mouth.eleven {
         // ElevenLabs, unless it is resting after failing.
         Some((eleven, voice)) if !eleven.resting() => {
+            voice_used = latency::TTS_ELEVENLABS;
             match eleven.speech_stream(text, voice, delivery, Some(stop), &mut send) {
                 // ElevenLabs couldn't: OpenAI's voice says it.
                 Err(error) if start.get() && !matches!(error, AiError::Cancelled) => {
+                    voice_used = latency::TTS_OPENAI;
                     if !mouth.failed.swap(true, Ordering::Relaxed) {
                         let _ = tx.send(Done::Noted {
                             line: format!(
@@ -1135,6 +1201,8 @@ fn speak_line(
     };
     let made = !start.get();
     if made {
+        latency::TRACER.stamp(Key::Job(id), Stage::TtsDone);
+        latency::TRACER.note(Key::Job(id), Note::Tts, voice_used);
         let _ = tx.send(Done::Audio {
             id,
             kind: delivery.kind,
@@ -1152,19 +1220,72 @@ fn speak_line(
     }
 }
 
+/// How long each piece of a sound handed over is, in samples (a tenth of
+/// a second at 24 kHz): the main loop plays as it comes, as it does a line.
+const SOUND_PIECE: usize = 2_400;
+
+/// Play `samples` (24 kHz mono) as one of MapleSyrup's own sounds — a hum —
+/// handed over a piece at a time like a line's speech, one at a time across
+/// both lanes ([`Mouth::floor`]). `label` goes with the first piece, as a
+/// line's words would.
+fn play_sound(
+    floor: &std::sync::Mutex<()>,
+    id: u64,
+    stop: &Stop,
+    samples: &[i16],
+    kind: Kind,
+    label: &str,
+    tx: &Sender<Done>,
+) {
+    if samples.is_empty() {
+        return;
+    }
+    let _floor = floor.lock().unwrap_or_else(|e| e.into_inner());
+    if stop.stopped() {
+        return;
+    }
+    let started = Instant::now();
+    let mut first = true;
+    for piece in samples.chunks(SOUND_PIECE) {
+        if stop.stopped() {
+            break;
+        }
+        let _ = tx.send(Done::Audio {
+            id,
+            kind,
+            text: if first {
+                label.to_string()
+            } else {
+                String::new()
+            },
+            samples: piece.to_vec(),
+            after: started.elapsed(),
+            first: false,
+            start: first,
+            end: false,
+        });
+        first = false;
+    }
+    let _ = tx.send(Done::Audio {
+        id,
+        kind,
+        text: String::new(),
+        samples: Vec::new(),
+        after: started.elapsed(),
+        first: false,
+        start: false,
+        end: true,
+    });
+}
+
 /// How the model is told it can see the game.
 const EYES_GUIDE: &str = "\n\nWith the player's words comes what your vision engine reads off the game right now \
-(not said by the player) and, while the game is in view, a picture of the game window as it is now, with rulers on \
-its edges (0 to 1000 across and down) for pointing at things. When their words are about the screen (where they \
-are, the map, their level, HP or MP, how they look, an NPC, a quest, an item, a window, what you see), the picture \
-is sharp and close-ups at full resolution come with it: the minimap (the map's name is at its top), the HUD (LV., \
-job, name, HP[now/max], MP[now/max], EXP) and the middle of the screen (their character, his name tag under him, \
-and any window or dialog). Read the answer off them, as a person reading the screen would: the map's name off the \
-minimap, the numbers off the HUD (or from what your vision engine read, with its age), what they wear off their \
-character — the one whose name tag under him is the HUD's name. Use look_closer for anything still too small. \
-Never answer about the screen from memory, from an earlier picture or from the small low-detail picture, and \
-never guess a map, a level or a look: if you truly can't read it, say so in a few words and say what you can see. Use what you see, like a friend looking at the \
-same screen. Without a picture you can't see the game right now.";
+(not said by the player): level, job and name, HP, MP and EXP with how old each number is, the map, what moves on \
+the screen, an open dialog and its text, buffs, the things it was taught, and the session. That is how you see the \
+game: you get no pictures. Answer about the screen from it, like a friend looking at the same screen; for small \
+print or a detail it doesn't give (what they wear, a window's text), call look_closer with your question — \
+MapleSyrup's eyes look for you. Never answer about the screen from memory, and never guess a map, a level or a \
+look: if the reading doesn't say and look_closer can't tell, say so in a few words.";
 
 /// How the model is told about MapleStory Classic World, when the player
 /// plays it ([`brain::classic_world`]): what it does not have, and that a
@@ -1179,15 +1300,16 @@ NPCs, recipes or routes. What you see on their screen beats what you remember.";
 
 /// How the model is told about its tools.
 const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
-- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language). The alert is about that thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
+- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with what they call it and what it looks like (leave the box out: MapleSyrup's eyes find it on the screen). Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language). The alert is about that thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When the player corrects you on anything else (a game fact, how something works, or how you talk or behave), call note_correction with the right version, then go on with it.
 - When the player asks you to remember something (\"remember…\", \"תזכור…\"), call remember_fact.
 - set_warnings when they want low HP or MP warnings at another percent, or no more of them, or back to the usual.
-- forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
+- forget_thing when asked to forget something you learned; look_closer with your question to read small text or details the reading doesn't give (leave the box out: MapleSyrup's eyes look for you).
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 - set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or to start again.
+- set_tone when they ask you to talk to them another way (gentler, ruder, swearing or not, no filter); set_language when they ask you to speak another language. Either changes their phone's setting too.
 A tool that changes a setting or what you keep acts only when the player's own sentence plainly asks for it — a \
 verb and what it is about (\"warn me when MP is under 30%\", \"stop talking\", \"remember that…\", \"no, I'm level \
 61\") — never on a few words that may be misheard or your own voice heard back (\"don't stop\", \"23% still \
@@ -1209,14 +1331,7 @@ specific thing that just happened or that you just saw, the way a friend blurts 
 portal.\" \"Rebuff.\" \"Oof, that hit.\"), never a run-down of the screen (\"you're on a map with four \
 characters…\"). One short line, in your attitude's voice; an instruction when there is one. Most of the time \
 there is nothing worth saying: then reply with exactly [silent]. Never narrate or list what's on screen, never \
-comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet. \
-Your line is heard about five seconds after this picture: never tell them to hit, dodge or kill one particular \
-monster, nor react to something that is over in a second; say what still holds by then.";
-
-/// A coach's line ready this long after its look is about a moment gone
-/// (the bug sheet's "kill the blue snail" after it was dead): left out. A
-/// look usually takes 4-7 s.
-const COACH_STALE: Duration = Duration::from_secs(8);
+comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet.";
 
 /// How the model is told what it learned is there.
 const LEARNED_GUIDE: &str =
@@ -1425,19 +1540,11 @@ speak to him in the masculine (in Hebrew אתה, תשתה, תזוז). Reply with
 }
 
 /// The conversation as input items. With the player's last sentence goes
-/// what is on screen now (and the screen itself), so everything before it
-/// stays the same from one reply to the next and OpenAI keeps it cached.
-/// (`close`: the sentence is about the screen — the screen goes sharp and
-/// close up, [`Eyes::close_pictures`]; `note`: how to answer it, just
-/// before the player's words.)
-fn input_of(
-    turns: &[openai::Turn],
-    snapshot: &str,
-    eyes: Option<&Eyes>,
-    helps: &str,
-    close: bool,
-    note: &str,
-) -> Vec<Value> {
+/// what the vision engine reads off the game now — the model sees the game
+/// through it alone, no pictures — so everything before it stays the same
+/// from one reply to the next and OpenAI keeps it cached. (`note`: how to
+/// answer it, just before the player's words.)
+fn input_of(turns: &[openai::Turn], snapshot: &str, helps: &str, note: &str) -> Vec<Value> {
     let last_user = turns.iter().rposition(|t| t.role == "user");
     turns
         .iter()
@@ -1450,13 +1557,6 @@ fn input_of(
                 "type": "input_text",
                 "text": format!("[The game right now, read by your vision engine — not said by the player]\n{snapshot}"),
             })];
-            if let Some(eyes) = eyes {
-                if close {
-                    content.extend(eyes.close_pictures_for(&t.text));
-                } else {
-                    content.extend(eyes.pictures());
-                }
-            }
             if !helps.trim().is_empty() {
                 content.push(json!({
                     "type": "input_text",
@@ -1479,9 +1579,6 @@ struct Watch<'a> {
     reason: &'a str,
     label: String,
     snapshot: &'a str,
-    facts: &'a brain::Facts,
-    now: &'a std::sync::Mutex<brain::Facts>,
-    eyes: Option<&'a Eyes>,
     said: &'a [String],
     language: Option<&'a str>,
     speak: bool,
@@ -1498,9 +1595,6 @@ fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Send
         reason,
         label,
         snapshot,
-        facts,
-        now,
-        eyes,
         said,
         language,
         speak,
@@ -1508,11 +1602,19 @@ fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Send
     let started = Instant::now();
     let mut instructions = brain.persona();
     instructions.push_str(COACH_GUIDE);
+    if let Some(slots) = brain.slots_guide() {
+        instructions.push_str("\n\n");
+        instructions.push_str(&slots);
+    }
     let learned = brain.learned();
     if !learned.is_empty() {
         instructions.push_str(LEARNED_GUIDE);
         instructions.push('\n');
         instructions.push_str(&learned);
+    }
+    if let Some(plan) = brain.plan() {
+        instructions.push_str("\n\n");
+        instructions.push_str(plan);
     }
     let mut text = format!(
         "[Not the player: your game watcher. Nobody said anything.]\nThe game right now, read by your vision \
@@ -1530,10 +1632,7 @@ engine:\n{snapshot}\n\n{reason}"
             "\n\n(The player's language setting is {name}: speak the language of the conversation; when there is none yet, {name}.)"
         ));
     }
-    let mut content = vec![json!({"type": "input_text", "text": text})];
-    if let Some(eyes) = eyes {
-        content.extend(eyes.pictures());
-    }
+    let content = vec![json!({"type": "input_text", "text": text})];
     // The conversation so far, so it knows what was talked about (the
     // player said they're bossing; it was told to shut up about potions).
     let mut input: Vec<Value> = brain
@@ -1574,15 +1673,6 @@ engine:\n{snapshot}\n\n{reason}"
         Err(AiError::Cancelled) => called_off = true,
         Err(e) => error = Some(e.detail()),
         Ok(answer) if brain::is_silent(&answer.text) => {}
-        Ok(answer) if started.elapsed() > COACH_STALE => {
-            let _ = tx.send(Done::Noted {
-                line: format!(
-                    "{label}: left out, ready {:.1} s after the look: {}",
-                    started.elapsed().as_secs_f32(),
-                    answer.text
-                ),
-            });
-        }
         Ok(answer) => {
             // Nothing it said lately is said again: a coach that keeps
             // calling the same thing out is cut to what is new. What is
@@ -1590,7 +1680,9 @@ engine:\n{snapshot}\n\n{reason}"
             // the voice did say once it is done: a line called off before
             // a sound was made was not said. (On a call the call says it.)
             let taken = brain.recent.taken();
-            let filtered = brain.recent.filter(&brain::for_speech(&answer.text));
+            let filtered = brain
+                .recent
+                .filter(&brain::for_speech(&brain.fill(&answer.text)));
             if filtered.dropped > 0 {
                 let _ = tx.send(Done::Noted {
                     line: format!(
@@ -1599,26 +1691,7 @@ engine:\n{snapshot}\n\n{reason}"
                     ),
                 });
             }
-            // A sentence about a bar that has moved since the look is
-            // advice for a moment gone: left out.
-            let line = match now.lock() {
-                Ok(now) => {
-                    let (kept, gone): (Vec<String>, Vec<String>) =
-                        brain::sentences_of(&filtered.text)
-                            .into_iter()
-                            .partition(|s| !brain::stale(s, facts, &now));
-                    if !gone.is_empty() {
-                        let _ = tx.send(Done::Noted {
-                            line: format!(
-                                "{label}: left out, the bar moved since: {}",
-                                gone.join(" ")
-                            ),
-                        });
-                    }
-                    kept.join(" ")
-                }
-                Err(_) => filtered.text,
-            };
+            let line = filtered.text;
             if !line.is_empty() && !stop.stopped() {
                 brain.watched(&label, &line);
                 if speak {
@@ -1667,7 +1740,6 @@ struct Talk<'a> {
     heard: String,
     snapshot: &'a str,
     facts: &'a brain::Facts,
-    now: &'a std::sync::Mutex<brain::Facts>,
     eyes: Option<&'a Eyes>,
     speak: bool,
     language: Option<&'a str>,
@@ -1685,7 +1757,6 @@ struct Saying<'a> {
     /// goes ([`brain::without_status`]).
     unasked: bool,
     facts: &'a brain::Facts,
-    now: &'a std::sync::Mutex<brain::Facts>,
     /// Whether he asked about the level, or to be congratulated, now or
     /// just before: else a level-up is not said ([`brain::without_level_ups`]).
     level_asked: bool,
@@ -1693,6 +1764,8 @@ struct Saying<'a> {
     total: usize,
     dropped: usize,
     restated: Vec<String>,
+    /// The game's values now, for the slots of a sentence (`{hp}`…).
+    fresh: Option<std::sync::Arc<crate::companion::fresh::Fresh>>,
 }
 
 impl Saying<'_> {
@@ -1701,6 +1774,16 @@ impl Saying<'_> {
     /// game's state back to someone who did not ask about it, or announces
     /// a level-up he did not ask about.
     fn take(&mut self, sentence: &str, recent: &mut brain::Recent, voice: &Sender<String>) {
+        // Its slots filled with the values of the moment it goes to the
+        // voice: the number heard is the number then.
+        let filled;
+        let sentence = match &self.fresh {
+            Some(fresh) => {
+                filled = fresh.fill(sentence).text;
+                filled.as_str()
+            }
+            None => sentence,
+        };
         let (sentence, level_ups) = brain::without_level_ups(sentence, self.level_asked);
         if !level_ups.is_empty() {
             self.restated.extend(level_ups);
@@ -1719,10 +1802,6 @@ impl Saying<'_> {
             }
         } else {
             sentence.to_string()
-        };
-        let sentence = match self.now.lock() {
-            Ok(now) => brain::freshen(&sentence, self.facts, &now),
-            Err(_) => sentence,
         };
         self.total += 1;
         if self.again || recent.fresh(&sentence) {
@@ -1770,7 +1849,6 @@ fn converse<'a>(
         heard,
         snapshot,
         facts,
-        now,
         eyes,
         speak,
         language,
@@ -1782,6 +1860,10 @@ fn converse<'a>(
     // service keeps the start cached, and answers sooner.
     let mut instructions = brain.persona();
     instructions.push_str(EYES_GUIDE);
+    if let Some(slots) = brain.slots_guide() {
+        instructions.push_str("\n\n");
+        instructions.push_str(&slots);
+    }
     let learned = brain.learned();
     // Classic World: what it doesn't have, and to say when it's not sure.
     let classic = brain::classic_world(snapshot, &learned);
@@ -1799,9 +1881,15 @@ fn converse<'a>(
         instructions.push('\n');
         instructions.push_str(&learned);
     }
-    // A sentence about the screen gets it sharp and close up; the language
-    // of the answer is his sentence's (or the one he asked for), to a man.
-    let close = brain::about_the_screen(&heard);
+    // The standing plan, thought through in the background: what it
+    // suggests when asked what to do (after what seldom changes, so the
+    // cached part stays cached).
+    if let Some(plan) = brain.plan() {
+        instructions.push_str("\n\n");
+        instructions.push_str(plan);
+    }
+    // The language of the answer is his sentence's (or the one he asked
+    // for), to a man.
     let note = brain::answer_note(&brain.language_for(&heard, language));
     // The voice sounds like the attitude of the moment.
     let attitude = brain.attitude();
@@ -1817,7 +1905,7 @@ fn converse<'a>(
         .as_ref()
         .map(|l| l.helps(&heard))
         .unwrap_or_default();
-    let mut input = input_of(&turns, snapshot, eyes, &helps, close, &note);
+    let mut input = input_of(&turns, snapshot, &helps, &note);
     let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
     // The brain for this reply.
     let mut chat = fast.unwrap_or(openai);
@@ -1829,7 +1917,6 @@ fn converse<'a>(
         again: brain::asks_again(&heard),
         unasked: !brain::asks_about_the_game(&heard),
         facts,
-        now,
         level_asked: brain::asks_about_the_level(&heard)
             || turns
                 .iter()
@@ -1841,6 +1928,7 @@ fn converse<'a>(
         kept: Vec::new(),
         total: 0,
         dropped: 0,
+        fresh: brain.fresh.clone(),
         restated: Vec::new(),
     };
     let mut looped = false;
@@ -1857,6 +1945,9 @@ fn converse<'a>(
                 let mut spoken = String::new();
                 let mut first = true;
                 while let Ok(line) = to_say.recv() {
+                    if first {
+                        latency::TRACER.stamp(Key::Job(id), Stage::FirstSentence);
+                    }
                     // The first sentence goes alone, so it is heard soon;
                     // after it, what was written while the last line was
                     // being said goes in one piece, so it flows.
@@ -1897,6 +1988,8 @@ fn converse<'a>(
         let mut said = String::new();
         let mut failed = None;
         let mut round = 0;
+        let mut first_words = true;
+        latency::TRACER.stamp(Key::Job(id), Stage::Request);
         while round < 4 {
             let ask = Ask {
                 instructions: instructions.clone(),
@@ -1911,8 +2004,12 @@ fn converse<'a>(
             };
             let answer = chat.ask(
                 &ask,
-                Some(&mut |piece| {
-                    if let Piece::Text(t) = piece {
+                Some(&mut |piece| match piece {
+                    Piece::Text(t) => {
+                        if first_words {
+                            first_words = false;
+                            latency::TRACER.stamp(Key::Job(id), Stage::FirstToken);
+                        }
                         said.push_str(t);
                         if speak {
                             for sentence in sentences.push(t) {
@@ -1920,6 +2017,7 @@ fn converse<'a>(
                             }
                         }
                     }
+                    Piece::Searching => latency::TRACER.stamp(Key::Job(id), Stage::Search),
                 }),
             );
             let answer = match answer {
@@ -1957,6 +2055,7 @@ fn converse<'a>(
             let mut go_on = false;
             let mut outputs = Vec::new();
             for call in &answer.calls {
+                let ran = Instant::now();
                 let (mut output, effect) = match toolbox {
                     // (A setting or the notebook changes only when his own
                     // sentence plainly asks for it.)
@@ -1965,6 +2064,7 @@ fn converse<'a>(
                     }
                     None => ("No tools here.".to_string(), None),
                 };
+                latency::TRACER.span(Key::Job(id), &call.name, ran, Instant::now());
                 if call.name != "look_it_up" {
                     go_on = true;
                 }
@@ -1990,6 +2090,15 @@ fn converse<'a>(
                     }
                     Some(Effect::Warn { what, below }) => {
                         let _ = tx.send(Done::Warn { what, below });
+                    }
+                    Some(Effect::Tone(id)) => {
+                        let _ = tx.send(Done::Tone { id });
+                    }
+                    Some(Effect::Language(locale)) => {
+                        let _ = tx.send(Done::Language { locale });
+                    }
+                    Some(Effect::Initiative(id)) => {
+                        let _ = tx.send(Done::Initiative { id });
                     }
                     Some(Effect::LookUp {
                         question,
@@ -2042,6 +2151,12 @@ words (\"probably\" if you're not sure)."
         }
         if stop.stopped() {
             failed = Some(AiError::Cancelled);
+        }
+        latency::TRACER.stamp(Key::Job(id), Stage::LlmDone);
+        if latency::TRACER.enabled()
+            && let Some(model) = chat.model()
+        {
+            latency::TRACER.note(Key::Job(id), Note::Model, &model);
         }
         // Talked over: the voice is waited for below, and what it said
         // aloud stays in the conversation, cut off where it was.
