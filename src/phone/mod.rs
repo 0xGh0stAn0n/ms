@@ -79,6 +79,12 @@ pub const DOG_PARTS: &[u8] = crate::app::dog::PARTS_PNG;
 /// Audio chunks larger than this are refused (a quarter second is ~8 kB).
 const MAX_AUDIO_BODY: usize = 256 * 1024;
 const MAX_JSON_BODY: usize = 16 * 1024;
+/// Where the page is served on this PC (plain HTTP on 127.0.0.1; the next
+/// free one of the ten after it): the same address each time, so the page
+/// keeps its settings (its language, the call) from one start to the next.
+pub const PAGE_PORT: u16 = 8450;
+/// The longest password the bar's locked levels take.
+const MOST_PASSWORD: usize = 200;
 /// Messages kept for the page.
 const KEEP_MESSAGES: usize = 100;
 /// A page opened fresh gets this many of the latest messages.
@@ -185,6 +191,11 @@ pub enum Inbound {
     /// The dial of how much it speaks up on its own was set to this level
     /// (one of `intuition/initiative.json`'s).
     Initiative(String),
+    /// The password the player gave for the bar's locked levels (the first
+    /// one given is theirs from then on).
+    Unlock(String),
+    /// The bar's locked levels shut again.
+    Lock,
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
     /// About updates: look now, install what is staged, or whether to
@@ -1214,6 +1225,27 @@ impl Hub {
                     ),
                 }
             }
+            ("POST", "/api/unlock") => match text_field("password")
+                .filter(|p| !p.trim().is_empty() && p.chars().count() <= MOST_PASSWORD)
+            {
+                Some(password) => {
+                    let mut state = self.lock();
+                    state
+                        .inbox
+                        .retain(|i| !matches!(i, Inbound::Unlock(_) | Inbound::Lock));
+                    state.inbox.push(Inbound::Unlock(password));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "no_password"})),
+            },
+            ("POST", "/api/lock") => {
+                let mut state = self.lock();
+                state
+                    .inbox
+                    .retain(|i| !matches!(i, Inbound::Unlock(_) | Inbound::Lock));
+                state.inbox.push(Inbound::Lock);
+                Response::json(200, &json!({"ok": true}))
+            }
             ("POST", "/api/speaker") => match text_field("id").filter(|id| {
                 !id.is_empty()
                     && id.len() <= 64
@@ -1729,6 +1761,7 @@ mod tests {
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/tone?k=k1", r#"{"tone": " Savage "}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
+            ("/api/unlock?k=k1", r#"{"password": "wild horses"}"#),
         ] {
             assert_eq!(
                 hub.handle(&request("POST", path, body)).status,
@@ -1778,7 +1811,25 @@ mod tests {
                         .clone()
                 ),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
+                Inbound::Unlock("wild horses".into()),
             ]
+        );
+        // The locked levels shut again: what was asked last stands.
+        for (path, body) in [
+            ("/api/unlock?k=k1", r#"{"password": "x"}"#),
+            ("/api/lock?k=k1", "{}"),
+        ] {
+            assert_eq!(hub.handle(&request("POST", path, body)).status, 200);
+        }
+        assert_eq!(hub.take_inbox(), vec![Inbound::Lock]);
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/unlock?k=k1",
+                r#"{"password": "  "}"#
+            ))
+            .status,
+            400
         );
         assert_eq!(
             hub.handle(&request("POST", "/api/speaker?k=k1", r#"{"id": "../x"}"#))

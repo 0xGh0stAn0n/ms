@@ -143,11 +143,19 @@ def share_view():
             "export": {"format": 1, "install_id": "6f1c2a9e-3b7d-4c55-9a0e-2d8f1b7c4e31" if on else None, "app_version": "0.9.0",
                        "sessions": [SHARED_SESSION]}}
 
-# The bar of how it talks, as the PC's own data has it (each level's name),
-# and the stand-in's tone: set where the bar is, talking at `now`.
-LEVELS = [{"id": l["id"]}
-          for l in json.load(open(os.path.join(REPO, "src", "companion", "spectrum.json"), encoding="utf-8"))["levels"]]
-def tone(set_, now=None): return {"levels": LEVELS, "set": set_, "now": now or set_}
+# The bar of how it talks, as the PC's own data has it (each level's name,
+# and which open only with the player's password), and the stand-in's tone:
+# set where the bar is, talking at `now`; the password chosen and
+# whether the locked levels are open (TONE_LOCK; the stand-in starts with them open,
+# as a player who opened them would see the bar).
+SPECTRUM = json.load(open(os.path.join(REPO, "src", "companion", "spectrum.json"), encoding="utf-8"))["levels"]
+LEVELS = [{"id": l["id"]} for l in SPECTRUM]
+OPEN_LEVELS = [{"id": l["id"]} for l in SPECTRUM if not l.get("locked")]
+TONE_LOCK = {"password": "wild horses", "open": True, "wrong": 0}
+def tone(set_, now=None):
+    return {"levels": LEVELS if TONE_LOCK["open"] else OPEN_LEVELS, "set": set_, "now": now or set_,
+            "lockable": len(OPEN_LEVELS) < len(LEVELS), "unlocked": TONE_LOCK["open"], "chosen": TONE_LOCK["password"] is not None,
+            "wrong": TONE_LOCK["wrong"]}
 STATUS["tone"] = tone("savage")
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -198,6 +206,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             # As the PC does: the bar set, and it talks there.
             ids = [l["id"] for l in LEVELS]
             STATUS["tone"] = tone(ids[ids.index((body or {}).get("tone"))])
+            self._send(200, b'{"ok":true}', "application/json")
+        elif path in ("/api/unlock", "/api/lock"):
+            # As the PC does: the first password is the player's; the right
+            # one opens the locked levels, a wrong one is counted.
+            word = (body or {}).get("password")
+            if path == "/api/lock": TONE_LOCK["open"] = False
+            elif TONE_LOCK["password"] is None: TONE_LOCK.update(password=word, open=True)
+            elif word == TONE_LOCK["password"]: TONE_LOCK["open"] = True
+            else: TONE_LOCK["wrong"] += 1
+            STATUS["tone"] = tone(STATUS["tone"]["set"])
             self._send(200, b'{"ok":true}', "application/json")
         elif path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
         elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "tone": "savage", "quiet": "wait_for_user"}).encode(), "application/json")
@@ -520,7 +538,7 @@ def tone_checks(browser):
     assert page.get_attribute("#toneBar", "max") == str(len(LEVELS) - 1)
     assert page.input_value("#toneBar") == str(ids.index("savage"))
     assert (page.inner_text("#toneName"), page.inner_text("#toneHint")) == ("Savage", "Roasts you hard and personally, still no swearing."), page.inner_text(".tone-now")
-    assert page.locator("#ageCard").count() == 0 and page.locator("#toneLock").count() == 0, "the page still asks for an age"
+    assert page.locator("#ageCard").count() == 0, "the page still asks for an age"
     assert page.inner_text(".tone .ends").split("\n") == ["For kids", "Wildest"], page.inner_text(".tone .ends")
     page.locator("#toneBar").scroll_into_view_if_needed()
     page.screenshot(path=os.path.join(SHOTS, "phone-tone.png"), full_page=True)
@@ -547,7 +565,7 @@ def tone_checks(browser):
     wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t_hold, "/api/tone")), 3, "letting go did not post the level")
     # The wildest, for anyone: it talks there, and its words say how.
     wait_for(lambda: STATUS["tone"]["now"] == wildest, 3, "the PC was not moved to the wildest")
-    wait_for(lambda: page.inner_text("#toneHint") == "Over-the-top, theatrical roasting: loud and merciless, but clean.", 3, ("the wildest's words", page.inner_text("#toneHint")))
+    wait_for(lambda: page.inner_text("#toneHint") == "The wildest: swears hard, no filter. Opens with your password.", 3, ("the wildest's words", page.inner_text("#toneHint")))
     # Moved down by name: posted.
     t0 = time.time()
     move_to("blunt")
@@ -560,13 +578,33 @@ def tone_checks(browser):
     page.select_option("#lang", "he-IL")
     wait_for(lambda: page.inner_text("#toneName") == "ישיר", 6, ("the level's name not in Hebrew", page.inner_text("#toneName")))
     assert page.get_attribute("html", "dir") == "rtl"
-    assert page.inner_text("#toneHint") == "ישיר ושתלטן, יורד על מהלכים גרועים, בלי קללות.", page.inner_text("#toneHint")
+    assert page.inner_text("#toneHint") == "ישיר, עם קצת עוקץ; בלי קללות.", page.inner_text("#toneHint")
     assert page.evaluate("getComputedStyle(document.querySelector('#toneBar')).direction") == "ltr"
     low, high = page.locator(".tone .ends span").all()
     assert (low.inner_text(), high.inner_text()) == ("לילדים", "הכי פרוע"), (low.inner_text(), high.inner_text())
     assert low.bounding_box()["x"] < high.bounding_box()["x"], "the gentlest end of the bar is not on the left"
     page.locator("#toneBar").scroll_into_view_if_needed()
     page.screenshot(path=os.path.join(SHOTS, "phone-tone-he.png"), full_page=True)
+    # The levels past the highest open one: shut, the bar lists the open ones
+    # only; a wrong password says so; the right one opens them; locked
+    # again, they go.
+    page.select_option("#lang", "en-US")
+    t_lock = time.time()
+    page.click("#lockShut")
+    wait_for(lambda: any(r["path"] == "/api/lock" for r in requests_since(t_lock)), 3, "locking did not reach the PC")
+    wait_for(lambda: page.get_attribute("#toneBar", "max") == str(len(OPEN_LEVELS) - 1), 4, ("the bar still lists the locked levels", page.get_attribute("#toneBar", "max")))
+    assert page.is_visible("#lockOpen") and not page.is_visible("#lockShut")
+    page.click("#lockOpen")
+    assert page.is_visible("#lockWord")
+    page.fill("#lockWord", "tame horses")
+    page.press("#lockWord", "Enter")
+    wait_for(lambda: page.inner_text("#lockNote") == "Wrong password.", 4, ("a wrong password was not said", page.inner_text("#lockNote")))
+    assert page.input_value("#lockWord") == "", "the password stayed in the field"
+    page.fill("#lockWord", "wild horses")
+    page.click("#lockGo")
+    wait_for(lambda: page.get_attribute("#toneBar", "max") == str(len(LEVELS) - 1), 4, "the right password did not open the locked levels")
+    assert any((r["body"] or {}).get("password") == "wild horses" for r in requests_since(t_lock, "/api/unlock"))
+    wait_for(lambda: page.is_visible("#lockShut") and not page.is_visible("#lockWord"), 3, "the opened bar still asks for the password")
     STATUS["tone"] = tone("savage")
     page.close()
 

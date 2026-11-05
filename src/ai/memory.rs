@@ -222,6 +222,15 @@ pub struct Memory {
     /// in `companion/spectrum.json` (a notebook from before the bar gets
     /// the attitude it kept).
     pub tone: Option<String>,
+    /// The password that opens the bar's locked levels, as
+    /// `salt:sha256(salt + password)` in hex; None until the player chooses
+    /// one (the first password given is the one).
+    pub lock: Option<String>,
+    /// Whether the locked levels are open on this PC (until locked again).
+    pub unlocked: bool,
+    /// Wrong passwords given since it started, for the page to say so.
+    #[serde(skip)]
+    pub wrong_passwords: u32,
     /// The voice it speaks in (an ElevenLabs voice's id; `None` or
     /// "openai": OpenAI's).
     pub voice: Option<String>,
@@ -259,6 +268,41 @@ const MOST_FORGOTTEN: usize = 100;
 pub const MOST_TASTES: usize = 20;
 pub const MOST_MOMENTS: usize = 12;
 
+/// What giving a password for the bar's locked levels did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unlock {
+    /// None was chosen yet: this one is the player's now, and they are open.
+    Chosen,
+    /// The right one: they are open.
+    Opened,
+    /// Not it: they stay shut.
+    Wrong,
+}
+
+/// The password's hash with its salt, in hex.
+fn password_hash(salt: &str, password: &str) -> String {
+    let digest = ring::digest::digest(
+        &ring::digest::SHA256,
+        format!("{salt}{password}").as_bytes(),
+    );
+    digest.as_ref().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A salt for a new password: 8 random bytes, in hex.
+fn random_salt() -> String {
+    use ring::rand::SecureRandom;
+    let mut bytes = [0u8; 8];
+    // (Should the system's randomness fail, the time still varies it.)
+    if ring::rand::SystemRandom::new().fill(&mut bytes).is_err() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        bytes = (nanos as u64).to_le_bytes();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 impl Memory {
     /// What is kept in `settings` (nothing yet: an empty notebook).
     pub fn load(settings: &Path) -> Memory {
@@ -286,9 +330,42 @@ impl Memory {
             .unwrap_or_else(|| spectrum.default_index())
     }
 
-    /// The level it talks at: where the bar is set.
+    /// The level it talks at: where the bar is set, or, while the locked
+    /// levels are shut, the highest open level below it.
     pub fn level(&self) -> &'static Level {
-        Spectrum::get().level(self.tone_set())
+        let spectrum = Spectrum::get();
+        spectrum.level(spectrum.open_at(self.tone_set(), self.unlocked))
+    }
+
+    /// The player gives `password` for the locked levels: the first one
+    /// given is kept as theirs; the right one opens them.
+    pub fn unlock(&mut self, password: &str) -> Unlock {
+        let password = password.trim();
+        if password.is_empty() {
+            self.wrong_passwords += 1;
+            return Unlock::Wrong;
+        }
+        let outcome = match self.lock.as_deref().and_then(|lock| lock.split_once(':')) {
+            Some((salt, hash)) if password_hash(salt, password) == hash => Unlock::Opened,
+            Some(_) => {
+                self.wrong_passwords += 1;
+                return Unlock::Wrong;
+            }
+            None => {
+                let salt = random_salt();
+                self.lock = Some(format!("{salt}:{}", password_hash(&salt, password)));
+                Unlock::Chosen
+            }
+        };
+        self.unlocked = true;
+        self.retune();
+        outcome
+    }
+
+    /// The locked levels shut again (the password stays).
+    pub fn relock(&mut self) {
+        self.unlocked = false;
+        self.retune();
     }
 
     /// Keep `attitude` the voice of the level it talks at, after the bar
@@ -1437,13 +1514,15 @@ mod tests {
     }
 
     #[test]
-    fn it_talks_where_the_bar_is_set_for_everyone() {
+    fn it_talks_where_the_bar_is_set_and_the_locked_levels_open_with_the_password() {
         use crate::companion::Attitude;
         let spectrum = Spectrum::get();
         let wildest = spectrum.levels().len() - 1;
-        // A notebook from before the bar, savage then, and from the age
-        // question's days (an answer and a place it no longer reads): the
-        // bar is where its attitude was, and it talks there.
+        let highest_open = spectrum.open_at(wildest, false);
+        // A notebook from before the bar, savage then (locked now), and from
+        // the age question's days (an answer and a place it no longer
+        // reads): the bar is where its attitude was, and it talks at the
+        // highest open level until the player opens the locked ones.
         let dir = temp("tone");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -1453,24 +1532,43 @@ mod tests {
         .unwrap();
         let mut memory = Memory::load(&dir);
         let savage = spectrum.of_voice(Attitude::Savage);
+        assert!(savage.locked);
         assert_eq!(memory.tone.as_deref(), Some(savage.id.as_str()));
+        assert_eq!(memory.level().id, spectrum.level(highest_open).id);
+        assert_eq!(memory.attitude, spectrum.level(highest_open).voice);
+        // The first password is the player's, and opens them.
+        assert_eq!(memory.unlock("  wild horses "), Unlock::Chosen);
         assert_eq!(memory.level().id, savage.id);
-        // `retune` at the load: the voice its lines and older versions use.
         assert_eq!(memory.attitude, Attitude::Savage);
-        // The wildest end, for anyone who sets it.
+        let lock = memory.lock.clone().unwrap();
+        assert!(!lock.contains("wild horses"), "{lock}");
+        // Shut again, a wrong one keeps them shut; the right one opens them.
+        memory.relock();
+        assert_eq!(memory.level().id, spectrum.level(highest_open).id);
+        assert_eq!(memory.unlock("tame horses"), Unlock::Wrong);
+        assert_eq!(memory.unlock(""), Unlock::Wrong);
+        assert_eq!(memory.wrong_passwords, 2);
+        assert!(!memory.unlocked);
+        assert_eq!(memory.unlock("wild horses"), Unlock::Opened);
+        // The wildest end, open.
         memory.tone = Some(spectrum.level(wildest).id.clone());
         memory.retune();
         assert_eq!(memory.level().id, spectrum.level(wildest).id);
-        // Kept as set, read back as set (without what it no longer reads).
+        // Kept as set, the password and that they are open with it (without
+        // what it no longer reads, nor the wrong tries).
         memory.save();
         let saved = std::fs::read_to_string(dir.join(FILE)).unwrap();
         assert!(!saved.contains("\"place\""), "{saved}");
+        assert!(!saved.contains("wrong_passwords"), "{saved}");
         let again = Memory::load(&dir);
         assert_eq!(again.tone, memory.tone);
+        assert_eq!(again.lock, memory.lock);
+        assert!(again.unlocked);
         assert_eq!(again.level().id, memory.level().id);
-        // A new notebook: the bar where it starts.
+        // A new notebook: the bar where it starts, the locked levels shut.
         let fresh = Memory::load(&temp("tone-fresh"));
         assert_eq!(fresh.tone_set(), spectrum.default_index());
+        assert!(!fresh.unlocked && fresh.lock.is_none());
         assert_eq!(
             fresh.level().id,
             spectrum.level(spectrum.default_index()).id

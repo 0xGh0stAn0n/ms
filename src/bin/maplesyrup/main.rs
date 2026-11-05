@@ -42,7 +42,7 @@ use ms::companion::{About, Action, Command, Companion, GameView, Kind, Observati
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
 use ms::perceive::{Look, Perceived, perceive};
-use ms::phone::{self, Hub, Inbound, VoiceOn, qr, tls, tunnel};
+use ms::phone::{self, Hub, Inbound, VoiceOn, tls};
 use ms::platform::overlay::{self, Overlay};
 use ms::platform::sound::Player;
 use ms::platform::{self, voice::Voice};
@@ -150,7 +150,8 @@ struct Options {
     window: Option<String>,
     input: Option<PathBuf>,
     phone: bool,
-    tunnel: bool,
+    /// Whether the page opens in this PC's browser at the start.
+    open_page: bool,
     port: u16,
     record: bool,
     record_mic: bool,
@@ -217,7 +218,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         window: None,
         input: None,
         phone: true,
-        tunnel: false,
+        open_page: true,
         port: 8443,
         record: false,
         record_mic: false,
@@ -275,7 +276,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
         };
         match flag {
             "--window" => o.window = Some(value("--window")?),
-            "--tunnel" => o.tunnel = true,
+            // (The phone over the internet is gone: the page is on this PC.
+            // Old shortcuts still say it.)
+            "--tunnel" => {}
+            "--no-open" => o.open_page = false,
             "--port" => o.port = number("--port", value("--port")?)? as u16,
             "--no-phone" => o.phone = false,
             "--record" => o.record = true,
@@ -343,8 +347,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
     // In the background, for Claude: no window of its own to show things
     // in, no voice, no phone, no update that would restart it from under
     // the Claude that started it.
+    if o.plain {
+        o.open_page = false;
+    }
     if o.background {
         o.phone = false;
+        o.open_page = false;
         o.overlay = false;
         o.voice = false;
         o.replies = Some(VoiceOn::Off);
@@ -559,15 +567,13 @@ fn pause_if_double_clicked() {
     }
 }
 
-/// The phone link once it is up.
+/// The page's link once it is up.
 struct PhoneLink {
     hub: Arc<Hub>,
-    /// What the QR code holds.
-    link: String,
-    /// The local-network link, also shown when the tunnel is used.
-    lan_link: Option<String>,
-    tunneled: bool,
-    _tunnel: Option<tunnel::Tunnel>,
+    /// The page on this PC: plain HTTP on 127.0.0.1 (a browser lets a page
+    /// from this PC's own address use the microphone, with no certificate
+    /// to warn about).
+    page: String,
 }
 
 fn start_phone(
@@ -588,44 +594,21 @@ fn start_phone(
     let identity = tls::load_or_create(settings, &names)?;
     let config = tls::server_config(&identity)?;
     hub.set_authority(identity.ca_der.clone());
-    let port = phone::serve_tls(Arc::clone(&hub), config, options.port)?;
-    let lan_link = lan_ip.map(|ip| phone::link(&format!("https://{ip}:{port}"), &key));
+    // (The local network's own link stays served, for what still uses it:
+    // the bench, a page opened there before.)
+    phone::serve_tls(Arc::clone(&hub), config, options.port)?;
+    let local = phone::serve_local(Arc::clone(&hub), phone::PAGE_PORT)?;
+    let page = phone::link(&format!("http://127.0.0.1:{local}"), &key);
+    Ok(PhoneLink { hub, page })
+}
 
-    if options.tunnel {
-        println!("Opening a Cloudflare tunnel for the phone…");
-        let binary = match tunnel::find(settings) {
-            Some(found) => found,
-            None => {
-                println!("  downloading cloudflared (once, about 60 MB)…");
-                tunnel::download(settings)?
-            }
-        };
-        let local = phone::serve_local(Arc::clone(&hub), 0)?;
-        // (It returns once the link works, or after a while: a link opened
-        // too early stays dead for minutes.)
-        let opened = tunnel::open(&binary, local, &session_dir.join("tunnel.log"))?;
-        if opened.answered == Some(false) {
-            println!("  the link may take a few more seconds to open");
-        }
-        let link = phone::link(&opened.url, &key);
-        return Ok(PhoneLink {
-            hub,
-            link,
-            lan_link,
-            tunneled: true,
-            _tunnel: Some(opened),
-        });
-    }
-    let link = lan_link
-        .clone()
-        .unwrap_or_else(|| phone::link(&format!("https://127.0.0.1:{port}"), &key));
-    Ok(PhoneLink {
-        hub,
-        link,
-        lan_link,
-        tunneled: false,
-        _tunnel: None,
-    })
+/// `url` in this PC's own browser.
+fn open_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let mut command = std::process::Command::new("explorer");
+    #[cfg(not(windows))]
+    let mut command = std::process::Command::new("xdg-open");
+    command.arg(url).spawn().map(|_| ())
 }
 
 /// One frame's worth for the main loop.
@@ -2308,15 +2291,21 @@ fn set_initiative(
     out.push(Kind::Info, line);
 }
 
-/// The bar of how it talks, for the phone: its levels, where the player set
-/// it, and the level it talks at now.
+/// The bar of how it talks, for the page: its levels (the locked ones while
+/// open), where the player set it, the level it talks at now, and the lock:
+/// whether there are locked levels, whether they are open, whether a
+/// password was chosen, and how many wrong ones were given.
 fn tone_status(learning: &ai::Learning) -> serde_json::Value {
     let spectrum = Spectrum::get();
     let memory = learning.memory();
     json!({
-        "levels": spectrum.for_phone(),
+        "levels": spectrum.for_phone(memory.unlocked),
         "set": spectrum.level(memory.tone_set()).id,
         "now": memory.level().id,
+        "lockable": spectrum.has_locked(),
+        "unlocked": memory.unlocked,
+        "chosen": memory.lock.is_some(),
+        "wrong": memory.wrong_passwords,
     })
 }
 
@@ -2656,6 +2645,16 @@ fn claude_absent(
 /// phone, or asked of the call or of Claude): kept, the level it talks at
 /// follows, and so does the voice of its own lines.
 fn set_tone(id: &str, learning: &ai::Learning, companion: &mut Companion, out: &mut Outputs) {
+    let spectrum = Spectrum::get();
+    let locked = spectrum
+        .index(id)
+        .is_some_and(|at| spectrum.level(at).locked && !learning.memory().unlocked);
+    if locked {
+        // (Only the password on the page opens it.)
+        out.session
+            .line("info", &format!("tone: {id} is locked; the bar stays"));
+        return;
+    }
     let level = {
         let mut memory = learning.memory();
         memory.tone = Some(id.to_string());
@@ -4601,19 +4600,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         env!("CARGO_PKG_VERSION")
     );
     if let Some(link) = &phone {
-        println!("{d}Phone:{r} {}", link.link);
-        if link.tunneled {
-            println!(
-                "{d}  through a Cloudflare tunnel (local network link: {}){r}",
-                link.lan_link.as_deref().unwrap_or("none")
-            );
-        } else {
-            println!(
-                "{d}  Until the phone trusts this PC it warns the page is \"not private\": tap Show Details → visit this website, then \"Trust this PC\" on the page, once, and it won't again.{r}"
-            );
-            println!(
-                "{d}  Phone on the same Wi-Fi. If Windows asks, allow MapleSyrup on private networks. No luck? Start it with --tunnel.{r}"
-            );
+        println!("{d}Page:{r} {}", link.page);
+        if options.open_page {
+            match open_in_browser(&link.page) {
+                Ok(()) => println!("{d}  opened in your browser{r}"),
+                Err(e) => println!("{d}  open it in your browser ({e}){r}"),
+            }
         }
     }
     if claude_board.is_some() {
@@ -4632,15 +4624,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     }
     println!();
 
-    let qr_lines: Vec<String> = phone
-        .as_ref()
-        .and_then(|p| qr::console(&p.link))
-        .map(|mut lines| {
-            lines.push(String::new());
-            lines.push(" Scan with your phone's camera".into());
-            lines
-        })
-        .unwrap_or_default();
+    // (No QR code: the page is on this PC.)
+    let qr_lines: Vec<String> = Vec::new();
     if !ansi {
         for line in &qr_lines {
             println!("{line}");
@@ -6022,6 +6007,38 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     }
                     Inbound::Initiative(id) => {
                         set_initiative(&id, &learning, &mut intuition, &mut out, &mut trace, now);
+                    }
+                    // A password for the locked levels (never logged), or
+                    // them shut again: the level it talks at follows.
+                    Inbound::Unlock(password) => {
+                        let outcome = {
+                            let mut memory = learning.memory();
+                            let outcome = memory.unlock(&password);
+                            memory.save();
+                            companion.settings.attitude = memory.attitude;
+                            outcome
+                        };
+                        let line = match outcome {
+                            ai::memory::Unlock::Chosen => {
+                                "tone: a password chosen; the locked levels are open"
+                            }
+                            ai::memory::Unlock::Opened => "tone: the locked levels are open",
+                            ai::memory::Unlock::Wrong => {
+                                "tone: a wrong password; the locked levels stay shut"
+                            }
+                        };
+                        out.session.line("info", line);
+                        memory_checked = None;
+                    }
+                    Inbound::Lock => {
+                        {
+                            let mut memory = learning.memory();
+                            memory.relock();
+                            memory.save();
+                            companion.settings.attitude = memory.attitude;
+                        }
+                        out.session.line("info", "tone: the locked levels are shut");
+                        memory_checked = None;
                     }
                     Inbound::Record(true) => recording.start(&mut out),
                     Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),

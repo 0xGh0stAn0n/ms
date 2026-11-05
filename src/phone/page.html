@@ -112,6 +112,10 @@
     transition: border-color .4s ease, box-shadow .4s ease; }
   .tone-card h2 { margin: 0 0 2px; }
   .tone-now { margin: 4px 0 0; }
+  .tone-lock { margin: 6px 0 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .tone-lock .linkish { padding: 0; }
+  .tone-lock input { width: 9em; }
+  .tone-lock[hidden], .tone-lock [hidden] { display: none; }
   .tone { position: relative; direction: ltr; margin: 4px 0 2px; }
   .tone-track { position: relative; height: 46px; }
   .tone-rail, .tone-fill { position: absolute; top: 50%; height: 16px; margin-top: -8px; border-radius: 999px; }
@@ -318,6 +322,15 @@
       <div class="ends"><span data-t="tone_low">For kids</span><span data-t="tone_high">Wildest</span></div>
     </div>
     <div class="sub tone-now"><b id="toneName"></b> <span id="toneHint"></span></div>
+    <div class="sub tone-lock" id="toneLock" hidden>
+      <button class="linkish" id="lockOpen" data-t="lock_open">Wilder levels: password</button>
+      <span id="lockForm" hidden>
+        <input type="password" id="lockWord" autocomplete="off" data-tp="lock_word">
+        <button id="lockGo" data-t="lock_go">Open</button>
+      </span>
+      <button class="linkish" id="lockShut" hidden data-t="lock_shut">Lock the wilder levels</button>
+      <span id="lockNote"></span>
+    </div>
   </div>
   <div class="meter"><i id="meter"></i></div>
   <div id="micStatus" data-t="mic_idle">Tap, allow the microphone, and talk to me like you would to a friend.</div>
@@ -361,8 +374,8 @@
       <ul id="voiceList" class="voices"></ul>
       <label class="opt" id="liveCallRow" style="display:none"><span data-t="live_call">Live call on the phone (fastest, but OpenAI's own voice and brain)</span> <input type="checkbox" id="liveCall"></label>
       <div class="sub" id="liveHint" style="margin:8px 0 4px; display:none" data-t="live_hint">On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.</div>
-      <div class="sub" style="margin:12px 0 8px" data-t="replies_on">Replies spoken on</div>
-      <div class="seg" id="voiceSeg">
+      <div class="sub" style="margin:12px 0 8px; display:none" data-t="replies_on">Replies spoken on</div>
+      <div class="seg" id="voiceSeg" style="display:none">
         <button data-on="pc" data-t="v_pc">PC</button><button data-on="phone" data-t="v_phone">Phone</button><button data-on="both" data-t="v_both">Both</button><button data-on="off" data-t="v_off">Off</button>
       </div>
     </section>
@@ -503,7 +516,7 @@
       mic_idle: "Tap, allow the microphone, and talk to me like you would to a friend.",
       mic_starting: "Starting the microphone…", mic_listening: "Listening — just talk.", mic_audio_only: "Sending audio to the PC.",
       mic_live: "Live — talk any time, in any language.", live_connecting: "Connecting the live call…", live_failed: "The live call didn't start; using the regular mode:",
-      live_hint: "On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.",
+      live_hint: "A live call: talk any time, in any language, and interrupt him.",
       mic_paused: "Paused. Tap to listen again.", mic_talking: "MapleSyrup is talking…",
       waiting_game: "Waiting for the game…", looking_game: "MapleSyrup is looking for the MapleStory window", watching: "Watching",
       cant_capture: "Can't capture the game:", no_game: "no game",
@@ -514,13 +527,15 @@
       level_n: "Level {n}.", told_me: "(you told me)",
       teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
       forget: "Forget", sure: "Sure?", says: "says",
-      woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call on the phone (fastest, understands any language; speaks in its own voice)",
+      woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call (fastest, understands any language; speaks in its own voice)",
       attitude: "How it talks to you", a_friendly: "Friendly", a_blunt: "Blunt", a_savage: "Savage", a_kids: "For kids", a_unhinged: "Unhinged",
-      ah_kids: "For young kids: gentle and encouraging, simple words, nothing rude or scary.", ah_friendly: "Warm and fun, teases gently, no swearing.", ah_blunt: "Direct and bossy, roasts your bad plays, no swearing.", ah_savage: "Roasts you hard and personally, still no swearing.", ah_unhinged: "Over-the-top, theatrical roasting: loud and merciless, but clean.",
+      ah_kids: "For young kids: gentle and encouraging, simple words, nothing rude or scary.", ah_friendly: "Warm and fun, teases gently, no swearing.", ah_blunt: "Direct, with a little sting; no swearing.", ah_savage: "Roasts you hard and personally, still no swearing.", ah_unhinged: "The wildest: swears hard, no filter. Opens with your password.",
       tone_low: "For kids", tone_high: "Wildest",
       h_memory: "What I know about you", mem_told: "you told me", mem_style: "How you like me to talk", mem_lately: "Lately", mem_lessons: "What you corrected me on",
       mem_empty: "Nothing yet. I learn as we play: what you're working on, how you like me to talk, and what you correct me on. It all stays on your PC.", mem_sessions: "learned from {n} sessions", mem_looked: "{n} answers I looked up, kept", mem_wait: "I answer {n} s after you stop talking",
-      replies_on: "Replies spoken on", v_pc: "PC", v_phone: "Phone", v_both: "Both", v_off: "Off",
+      replies_on: "Replies spoken on", v_pc: "PC", v_phone: "This page", v_both: "Both", v_off: "Off",
+      lock_open: "Wilder levels: password", lock_choose: "Choose a password for the wilder levels:", lock_word: "Password",
+      lock_go: "Open", lock_shut: "Lock the wilder levels", lock_wrong: "Wrong password.",
       answer_all: "Answer everything I say (off: only after “syrup”, for streaming)",
       language: "Language", send_audio: "Send the microphone's audio to the PC",
       vid_start: "Record the session", vid_on: "Recording {n} — tap to stop", vid_starting: "Getting the recorder ready…", vid_download: "Getting the recorder ready: {n} MB…", vid_saving: "Saving the video…", vid_saved: "Saved on the PC: {n}", vid_failed: "Couldn't record: {n}", vid_hint: "The whole screen, the game's sound, MapleSyrup and you, saved as a video in the session folder on the PC.",
@@ -529,7 +544,7 @@
       no_recognition: "This browser has no speech recognition, so use the buttons. (Safari on iPhone and Chrome on Android have it.)",
       rec_not_allowed: "Speech recognition isn't allowed. On iPhone: Settings → Apps → Safari → Microphone: Allow, and Settings → Siri → turn on Siri (or Keyboard → Enable Dictation). Buttons still work.",
       rec_offline: "This device is offline, and speech recognition needs the internet.", rec_unreachable: "Speech recognition can't reach its service right now. Still trying…", rec_error: "Speech recognition:", rec_cant_start: "Speech recognition could not start:",
-      no_mic: "This browser has no microphone access.", need_https: "The microphone needs the secure (https) link from MapleSyrup's QR code.",
+      no_mic: "This browser has no microphone access.", need_https: "The microphone needs the page MapleSyrup opened in this PC's browser.",
       mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
       hearing_hebrew: "Hearing Hebrew now.", hearing_lang: "Hearing: {n}",
       share_unavailable: "Your play stats stay on this PC (Details shows your last sessions). Sharing them with anyone isn't available: it first needs a rights review for MapleStory and consent asked for each purpose. Nothing is sent anywhere.",
@@ -561,7 +576,7 @@
       mic_idle: "לחץ, אשר את המיקרופון, ודבר איתי כמו עם חבר.",
       mic_starting: "מפעיל את המיקרופון…", mic_listening: "מקשיב — פשוט דבר.", mic_audio_only: "שולח את הקול למחשב.",
       mic_live: "בשיחה חיה — דבר מתי שבא לך, בכל שפה.", live_connecting: "מתחבר לשיחה החיה…", live_failed: "השיחה החיה לא עלתה, עובר למצב הרגיל:",
-      live_hint: "בטלפון זו שיחה חיה: דבר מתי שבא לך, בכל שפה, ותקטע אותו כשבא לך. במחשב: הקול שלו ברמקולים של המחשב.",
+      live_hint: "שיחה חיה: דבר מתי שבא לך, בכל שפה, ותקטע אותו כשבא לך.",
       mic_paused: "בהשהיה. לחץ כדי להקשיב שוב.", mic_talking: "MapleSyrup מדבר…",
       waiting_game: "מחכה למשחק…", looking_game: "MapleSyrup מחפש את החלון של MapleStory", watching: "צופה ב-",
       cant_capture: "אי אפשר לצלם את המשחק:", no_game: "אין משחק",
@@ -572,13 +587,15 @@
       level_n: "רמה {n}.", told_me: "(אמרת לי)",
       teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
       forget: "שכח", sure: "בטוח?", says: "אומר",
-      woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה בטלפון (הכי מהיר, מבין כל שפה; מדבר בקול שלו)",
+      woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה (הכי מהיר, מבין כל שפה; מדבר בקול שלו)",
       attitude: "איך הוא מדבר אליך", a_friendly: "נחמד", a_blunt: "ישיר", a_savage: "פרוע", a_kids: "לילדים", a_unhinged: "מופרע",
-      ah_kids: "לילדים קטנים: עדין ומעודד, מילים פשוטות, בלי שום דבר גס או מפחיד.", ah_friendly: "חם וכיפי, עוקץ בעדינות, בלי קללות.", ah_blunt: "ישיר ושתלטן, יורד על מהלכים גרועים, בלי קללות.", ah_savage: "יורד עליך חזק ואישית, עדיין בלי קללות.", ah_unhinged: "ירידות מוגזמות ודרמטיות: רועש וחסר רחמים, אבל נקי.",
+      ah_kids: "לילדים קטנים: עדין ומעודד, מילים פשוטות, בלי שום דבר גס או מפחיד.", ah_friendly: "חם וכיפי, עוקץ בעדינות, בלי קללות.", ah_blunt: "ישיר, עם קצת עוקץ; בלי קללות.", ah_savage: "יורד עליך חזק ואישית, עדיין בלי קללות.", ah_unhinged: "הכי פרוע: מקלל בלי פילטר. נפתח בסיסמה שלך.",
       tone_low: "לילדים", tone_high: "הכי פרוע",
       h_memory: "מה שאני יודע עליך", mem_told: "אמרת לי", mem_style: "איך אתה אוהב שאני מדבר", mem_lately: "לאחרונה", mem_lessons: "במה תיקנת אותי",
       mem_empty: "עדיין כלום. אני לומד תוך כדי משחק: על מה אתה עובד, איך אתה אוהב שאדבר, ובמה אתה מתקן אותי. הכל נשאר במחשב שלך.", mem_sessions: "למדתי מ-{n} סשנים", mem_looked: "{n} תשובות שחיפשתי שמורות", mem_wait: "אני עונה {n} שניות אחרי שאתה מסיים לדבר",
-      replies_on: "איפה לשמוע את התשובות", v_pc: "מחשב", v_phone: "טלפון", v_both: "שניהם", v_off: "כבוי",
+      replies_on: "איפה לשמוע את התשובות", v_pc: "מחשב", v_phone: "הדף הזה", v_both: "שניהם", v_off: "כבוי",
+      lock_open: "רמות פרועות יותר: סיסמה", lock_choose: "בחר סיסמה לרמות הפרועות:", lock_word: "סיסמה",
+      lock_go: "פתח", lock_shut: "נעל את הרמות הפרועות", lock_wrong: "סיסמה שגויה.",
       answer_all: "לענות על כל מה שאני אומר (כבוי: רק אחרי „syrup”, בשביל סטרים)",
       language: "שפה", send_audio: "לשלוח את קול המיקרופון למחשב",
       vid_start: "הקלט את הסשן", vid_on: "מקליט {n} — לחץ כדי לעצור", vid_starting: "מכין את ההקלטה…", vid_download: "מכין את ההקלטה: {n} MB…", vid_saving: "שומר את הסרטון…", vid_saved: "נשמר במחשב: {n}", vid_failed: "לא הצלחתי להקליט: {n}", vid_hint: "כל המסך, הסאונד של המשחק, MapleSyrup ואתה — נשמר כסרטון בתיקיית הסשן במחשב.",
@@ -587,7 +604,7 @@
       no_recognition: "בדפדפן הזה אין זיהוי דיבור, אז השתמש בכפתורים. (יש את זה ב-Safari באייפון וב-Chrome באנדרואיד.)",
       rec_not_allowed: "זיהוי הדיבור לא מאושר. באייפון: הגדרות ← אפליקציות ← Safari ← מיקרופון: אפשר, והגדרות ← Siri ← הפעל את Siri (או מקלדת ← הפעל הכתבה). הכפתורים עדיין עובדים.",
       rec_offline: "המכשיר הזה לא מחובר לאינטרנט, וזיהוי הדיבור צריך אינטרנט.", rec_unreachable: "זיהוי הדיבור לא מצליח להגיע לשירות שלו כרגע. ממשיך לנסות…", rec_error: "זיהוי דיבור:", rec_cant_start: "זיהוי הדיבור לא הצליח להתחיל:",
-      no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הקישור המאובטח (https) מקוד ה-QR של MapleSyrup.",
+      no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הדף ש-MapleSyrup פתח בדפדפן של המחשב.",
       mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
       hearing_hebrew: "שומע עברית עכשיו.", hearing_lang: "שומע: {n}",
       share_unavailable: "סטטיסטיקות המשחק שלך נשארות במחשב הזה (בפרטים מופיעים הסשנים האחרונים). שיתוף שלהן עם מישהו לא זמין: קודם צריך בדיקת זכויות ל-MapleStory והסכמה נפרדת לכל מטרה. שום דבר לא נשלח לשום מקום.",
@@ -632,7 +649,7 @@
       forget: "Olvidar", sure: "¿Seguro?", says: "dice",
       woof: "¡Guau!", voice_pick: "Voz", voice_openai: "OpenAI (integrada)", live_call: "Llamada en vivo en el teléfono (lo más rápido, pero con la voz y el cerebro de OpenAI)",
       attitude: "Cómo te habla", a_friendly: "Amable", a_blunt: "Directo", a_savage: "Salvaje", a_kids: "Para niños", a_unhinged: "Desatado",
-      ah_kids: "Para niños pequeños: amable y alentador, palabras sencillas, nada grosero ni que dé miedo.", ah_friendly: "Cálido y divertido, se burla con cariño, sin palabrotas.", ah_blunt: "Directo y mandón, se ríe de tus malas jugadas, sin palabrotas.", ah_savage: "Se burla de ti sin piedad, y sigue sin palabrotas.", ah_unhinged: "Burlas exageradas y teatrales: ruidoso y despiadado, pero limpio.",
+      ah_kids: "Para niños pequeños: amable y alentador, palabras sencillas, nada grosero ni que dé miedo.", ah_friendly: "Cálido y divertido, se burla con cariño, sin palabrotas.", ah_savage: "Se burla de ti sin piedad, y sigue sin palabrotas.",
       tone_low: "Para niños", tone_high: "Lo más salvaje",
       h_memory: "Lo que sé de ti", mem_told: "me lo dijiste", mem_style: "Cómo te gusta que hable", mem_lately: "Últimamente", mem_lessons: "En qué me corregiste",
       mem_empty: "Nada todavía. Aprendo mientras jugamos: en qué estás, cómo te gusta que hable y en qué me corriges. Todo se queda en tu PC.", mem_sessions: "aprendí de {n} sesiones", mem_looked: "{n} respuestas que busqué, guardadas", mem_wait: "Respondo {n} s después de que dejas de hablar",
@@ -671,7 +688,7 @@
       forget: "Esquecer", sure: "Certeza?", says: "diz",
       woof: "Au au!", voice_pick: "Voz", voice_openai: "OpenAI (embutida)", live_call: "Chamada ao vivo no celular (mais rápida, mas com a voz e o cérebro da OpenAI)",
       attitude: "Como ele fala com você", a_friendly: "Gentil", a_blunt: "Direto", a_savage: "Selvagem", a_kids: "Para crianças", a_unhinged: "Insano",
-      ah_kids: "Para crianças pequenas: gentil e animador, palavras simples, nada grosseiro ou assustador.", ah_friendly: "Caloroso e divertido, zoa de leve, sem palavrões.", ah_blunt: "Direto e mandão, zoa suas jogadas ruins, sem palavrões.", ah_savage: "Zoa você sem dó, e continua sem palavrões.", ah_unhinged: "Zoeira exagerada e teatral: barulhento e sem piedade, mas limpo.",
+      ah_kids: "Para crianças pequenas: gentil e animador, palavras simples, nada grosseiro ou assustador.", ah_friendly: "Caloroso e divertido, zoa de leve, sem palavrões.", ah_savage: "Zoa você sem dó, e continua sem palavrões.",
       tone_low: "Para crianças", tone_high: "O mais selvagem",
       h_memory: "O que eu sei sobre você", mem_told: "você me contou", mem_style: "Como você gosta que eu fale", mem_lately: "Ultimamente", mem_lessons: "Onde você me corrigiu",
       mem_empty: "Nada ainda. Eu aprendo enquanto a gente joga: no que você está, como gosta que eu fale e onde você me corrige. Tudo fica no seu PC.", mem_sessions: "aprendi com {n} sessões", mem_looked: "{n} respostas que pesquisei, guardadas", mem_wait: "Respondo {n} s depois que você para de falar",
@@ -710,7 +727,7 @@
       forget: "Oublier", sure: "Sûr ?", says: "dit",
       woof: "Ouaf !", voice_pick: "Voix", voice_openai: "OpenAI (intégrée)", live_call: "Appel en direct sur le téléphone (le plus rapide, mais avec la voix et le cerveau d'OpenAI)",
       attitude: "Comment il te parle", a_friendly: "Sympa", a_blunt: "Direct", a_savage: "Sauvage", a_kids: "Pour enfants", a_unhinged: "Déchaîné",
-      ah_kids: "Pour les petits : doux et encourageant, mots simples, rien de grossier ni d'effrayant.", ah_friendly: "Chaleureux et drôle, taquine gentiment, sans gros mots.", ah_blunt: "Direct et autoritaire, se moque de tes mauvais coups, sans gros mots.", ah_savage: "Te clashe sans pitié, toujours sans gros mots.", ah_unhinged: "Des clashs exagérés et théâtraux : bruyant et impitoyable, mais propre.",
+      ah_kids: "Pour les petits : doux et encourageant, mots simples, rien de grossier ni d'effrayant.", ah_friendly: "Chaleureux et drôle, taquine gentiment, sans gros mots.", ah_savage: "Te clashe sans pitié, toujours sans gros mots.",
       tone_low: "Pour enfants", tone_high: "Le plus sauvage",
       h_memory: "Ce que je sais de toi", mem_told: "tu me l'as dit", mem_style: "Comment tu aimes que je parle", mem_lately: "Dernièrement", mem_lessons: "Ce sur quoi tu m'as corrigé",
       mem_empty: "Rien pour l'instant. J'apprends en jouant : ce que tu fais, comment tu aimes que je parle et ce sur quoi tu me corriges. Tout reste sur ton PC.", mem_sessions: "appris de {n} sessions", mem_looked: "{n} réponses cherchées, gardées", mem_wait: "Je réponds {n} s après que tu as fini de parler",
@@ -749,7 +766,7 @@
       forget: "Vergessen", sure: "Sicher?", says: "sagt",
       woof: "Wuff!", voice_pick: "Stimme", voice_openai: "OpenAI (eingebaut)", live_call: "Live-Anruf auf dem Handy (am schnellsten, aber mit OpenAIs Stimme und Gehirn)",
       attitude: "Wie er mit dir redet", a_friendly: "Freundlich", a_blunt: "Direkt", a_savage: "Gnadenlos", a_kids: "Für Kinder", a_unhinged: "Entfesselt",
-      ah_kids: "Für kleine Kinder: sanft und ermutigend, einfache Wörter, nichts Grobes oder Gruseliges.", ah_friendly: "Herzlich und lustig, neckt sanft, kein Fluchen.", ah_blunt: "Direkt und bestimmend, disst deine schlechten Züge, ohne Fluchen.", ah_savage: "Disst dich gnadenlos und persönlich, trotzdem ohne Fluchen.", ah_unhinged: "Übertriebener, theatralischer Spott: laut und gnadenlos, aber sauber.",
+      ah_kids: "Für kleine Kinder: sanft und ermutigend, einfache Wörter, nichts Grobes oder Gruseliges.", ah_friendly: "Herzlich und lustig, neckt sanft, kein Fluchen.", ah_savage: "Disst dich gnadenlos und persönlich, trotzdem ohne Fluchen.",
       tone_low: "Für Kinder", tone_high: "Am wildesten",
       h_memory: "Was ich über dich weiß", mem_told: "hast du mir gesagt", mem_style: "Wie ich mit dir reden soll", mem_lately: "Zuletzt", mem_lessons: "Wo du mich korrigiert hast",
       mem_empty: "Noch nichts. Ich lerne beim Spielen: woran du gerade bist, wie ich mit dir reden soll und wo du mich korrigierst. Alles bleibt auf deinem PC.", mem_sessions: "aus {n} Sitzungen gelernt", mem_looked: "{n} nachgeschlagene Antworten gespeichert", mem_wait: "Ich antworte {n} s, nachdem du aufhörst zu sprechen",
@@ -788,7 +805,7 @@
       forget: "잊기", sure: "확실해?", says: "말:",
       woof: "멍!", voice_pick: "목소리", voice_openai: "OpenAI (기본)", live_call: "휴대폰 실시간 통화 (가장 빠르지만 OpenAI의 목소리와 두뇌)",
       attitude: "말투", a_friendly: "친절", a_blunt: "직설", a_savage: "독설", a_kids: "어린이용", a_unhinged: "막장",
-      ah_kids: "어린아이용: 다정하게 응원하고, 쉬운 말만 쓰고, 거칠거나 무서운 말은 안 해요.", ah_friendly: "따뜻하고 재밌게, 살살 놀리고, 욕은 안 해요.", ah_blunt: "직설적이고 강하게, 못한 플레이는 놀리고, 욕은 안 해요.", ah_savage: "대놓고 세게 놀려요. 그래도 욕은 안 해요.", ah_unhinged: "과장되고 연극적으로 놀려요. 시끄럽고 가차 없지만 깨끗하게.",
+      ah_kids: "어린아이용: 다정하게 응원하고, 쉬운 말만 쓰고, 거칠거나 무서운 말은 안 해요.", ah_friendly: "따뜻하고 재밌게, 살살 놀리고, 욕은 안 해요.", ah_savage: "대놓고 세게 놀려요. 그래도 욕은 안 해요.",
       tone_low: "어린이용", tone_high: "가장 거칠게",
       h_memory: "내가 너에 대해 아는 것", mem_told: "네가 말해 줬어", mem_style: "네가 좋아하는 말투", mem_lately: "최근", mem_lessons: "네가 고쳐 준 것",
       mem_empty: "아직 없어. 같이 플레이하면서 배워: 네가 하고 있는 것, 좋아하는 말투, 네가 고쳐 준 것. 전부 네 PC에만 저장돼.", mem_sessions: "{n}개 세션에서 배움", mem_looked: "찾아본 답 {n}개 저장", mem_wait: "말이 끝나고 {n}초 뒤에 대답해",
@@ -827,7 +844,7 @@
       forget: "忘れる", sure: "本当に？", says: "セリフ:",
       woof: "ワン!", voice_pick: "声", voice_openai: "OpenAI（内蔵）", live_call: "スマホでライブ通話（最速、ただしOpenAIの声と頭脳）",
       attitude: "話し方", a_friendly: "やさしい", a_blunt: "ストレート", a_savage: "毒舌", a_kids: "子ども向け", a_unhinged: "暴走",
-      ah_kids: "小さな子ども向け：やさしく励まして、かんたんな言葉で、乱暴なことも怖いことも言わない。", ah_friendly: "あたたかく楽しく、軽くいじるだけ、悪口なし。", ah_blunt: "ストレートで仕切りたがり、下手なプレイはいじる、悪口なし。", ah_savage: "容赦なくガッツリいじる、それでも悪口なし。", ah_unhinged: "大げさで芝居がかったいじり：うるさくて容赦ないけど、言葉はきれい。",
+      ah_kids: "小さな子ども向け：やさしく励まして、かんたんな言葉で、乱暴なことも怖いことも言わない。", ah_friendly: "あたたかく楽しく、軽くいじるだけ、悪口なし。", ah_savage: "容赦なくガッツリいじる、それでも悪口なし。",
       tone_low: "子ども向け", tone_high: "いちばん過激",
       h_memory: "きみについて知っていること", mem_told: "きみが教えてくれた", mem_style: "好きな話し方", mem_lately: "最近", mem_lessons: "きみが直してくれたこと",
       mem_empty: "まだ何もないよ。一緒に遊びながら覚えるね：今やっていること、好きな話し方、直してくれたこと。全部きみのPCに保存されるよ。", mem_sessions: "{n}回のセッションから学習", mem_looked: "調べた答え{n}件を保存", mem_wait: "話し終わってから{n}秒で答えるよ",
@@ -866,7 +883,7 @@
       forget: "忘掉", sure: "确定？", says: "会说",
       woof: "汪!", voice_pick: "声音", voice_openai: "OpenAI（内置）", live_call: "手机实时通话（最快，但用的是 OpenAI 的声音和大脑）",
       attitude: "说话方式", a_friendly: "友好", a_blunt: "直接", a_savage: "毒舌", a_kids: "儿童", a_unhinged: "疯狂",
-      ah_kids: "给小朋友：温柔、鼓励，用简单的词，不说粗话，也不吓人。", ah_friendly: "温暖有趣，轻轻调侃，不说脏话。", ah_blunt: "直接又强势，会吐槽你的烂操作，不说脏话。", ah_savage: "毫不留情地损你，还是不说脏话。", ah_unhinged: "夸张又戏剧化地吐槽：吵闹又无情，但不带脏字。",
+      ah_kids: "给小朋友：温柔、鼓励，用简单的词，不说粗话，也不吓人。", ah_friendly: "温暖有趣，轻轻调侃，不说脏话。", ah_savage: "毫不留情地损你，还是不说脏话。",
       tone_low: "儿童", tone_high: "最狂野",
       h_memory: "我对你的了解", mem_told: "你告诉我的", mem_style: "你喜欢我怎么说话", mem_lately: "最近", mem_lessons: "你纠正过我的",
       mem_empty: "还没有。我们一起玩的时候我会学：你在做什么、你喜欢我怎么说话、你纠正过我什么。全部只保存在你的电脑上。", mem_sessions: "从 {n} 次会话中学习", mem_looked: "已保存 {n} 个查到的答案", mem_wait: "你说完 {n} 秒后我就回答",
@@ -905,7 +922,7 @@
       forget: "忘掉", sure: "確定？", says: "會說",
       woof: "汪!", voice_pick: "聲音", voice_openai: "OpenAI（內建）", live_call: "手機即時通話（最快，但用的是 OpenAI 的聲音和大腦）",
       attitude: "說話方式", a_friendly: "友善", a_blunt: "直接", a_savage: "毒舌", a_kids: "兒童", a_unhinged: "瘋狂",
-      ah_kids: "給小朋友：溫柔、鼓勵，用簡單的詞，不說粗話，也不嚇人。", ah_friendly: "溫暖有趣，輕輕調侃，不說髒話。", ah_blunt: "直接又強勢，會吐槽你的爛操作，不說髒話。", ah_savage: "毫不留情地損你，還是不說髒話。", ah_unhinged: "誇張又戲劇化地吐槽：吵鬧又無情，但不帶髒字。",
+      ah_kids: "給小朋友：溫柔、鼓勵，用簡單的詞，不說粗話，也不嚇人。", ah_friendly: "溫暖有趣，輕輕調侃，不說髒話。", ah_savage: "毫不留情地損你，還是不說髒話。",
       tone_low: "兒童", tone_high: "最狂野",
       h_memory: "我對你的了解", mem_told: "你告訴我的", mem_style: "你喜歡我怎麼說話", mem_lately: "最近", mem_lessons: "你糾正過我的",
       mem_empty: "還沒有。我們一起玩的時候我會學：你在做什麼、你喜歡我怎麼說話、你糾正過我什麼。全部只存在你的電腦上。", mem_sessions: "從 {n} 次工作階段中學習", mem_looked: "已儲存 {n} 個查到的答案", mem_wait: "你說完 {n} 秒後我就回答",
@@ -944,7 +961,7 @@
       forget: "ลืม", sure: "แน่ใจไหม?", says: "พูดว่า",
       woof: "โฮ่ง!", voice_pick: "เสียง", voice_openai: "OpenAI (ในตัว)", live_call: "โทรสดบนมือถือ (เร็วที่สุด แต่ใช้เสียงและสมองของ OpenAI)",
       attitude: "สไตล์การพูด", a_friendly: "ใจดี", a_blunt: "ตรงๆ", a_savage: "โหด", a_kids: "สำหรับเด็ก", a_unhinged: "โหดสุด",
-      ah_kids: "สำหรับเด็กเล็ก: อ่อนโยน ให้กำลังใจ ใช้คำง่ายๆ ไม่มีคำหยาบหรือเรื่องน่ากลัว", ah_friendly: "อบอุ่นและสนุก แซวเบาๆ ไม่สบถ", ah_blunt: "ตรงๆ และชอบสั่ง แซวตอนคุณเล่นพลาด ไม่สบถ", ah_savage: "แซวคุณแรงๆ แบบไม่ยั้ง แต่ก็ยังไม่สบถ", ah_unhinged: "แซวแบบเว่อร์และดราม่า เสียงดัง ไม่ปรานี แต่สะอาด",
+      ah_kids: "สำหรับเด็กเล็ก: อ่อนโยน ให้กำลังใจ ใช้คำง่ายๆ ไม่มีคำหยาบหรือเรื่องน่ากลัว", ah_friendly: "อบอุ่นและสนุก แซวเบาๆ ไม่สบถ", ah_savage: "แซวคุณแรงๆ แบบไม่ยั้ง แต่ก็ยังไม่สบถ",
       tone_low: "สำหรับเด็ก", tone_high: "โหดที่สุด",
       h_memory: "สิ่งที่ฉันรู้เกี่ยวกับคุณ", mem_told: "คุณบอกฉัน", mem_style: "คุณชอบให้ฉันพูดแบบไหน", mem_lately: "ช่วงนี้", mem_lessons: "เรื่องที่คุณแก้ให้ฉัน",
       mem_empty: "ยังไม่มีเลย ฉันเรียนรู้ระหว่างที่เราเล่นด้วยกัน: คุณกำลังทำอะไร ชอบให้ฉันพูดแบบไหน และเรื่องที่คุณแก้ให้ฉัน ทั้งหมดเก็บไว้ในพีซีของคุณเท่านั้น", mem_sessions: "เรียนรู้จาก {n} เซสชัน", mem_looked: "เก็บคำตอบที่ค้นมาแล้ว {n} ข้อ", mem_wait: "ฉันตอบหลังจากคุณหยุดพูด {n} วินาที",
@@ -983,7 +1000,7 @@
       forget: "Quên", sure: "Chắc chưa?", says: "sẽ nói",
       woof: "Gâu!", voice_pick: "Giọng", voice_openai: "OpenAI (có sẵn)", live_call: "Gọi trực tiếp trên điện thoại (nhanh nhất, nhưng dùng giọng và bộ não của OpenAI)",
       attitude: "Cách nói chuyện", a_friendly: "Thân thiện", a_blunt: "Thẳng thắn", a_savage: "Gắt", a_kids: "Cho trẻ em", a_unhinged: "Mất kiểm soát",
-      ah_kids: "Cho trẻ nhỏ: nhẹ nhàng, khích lệ, từ ngữ đơn giản, không thô tục hay đáng sợ.", ah_friendly: "Ấm áp, vui vẻ, trêu nhẹ, không chửi thề.", ah_blunt: "Thẳng thắn, hay ra lệnh, cà khịa khi bạn chơi dở, không chửi thề.", ah_savage: "Cà khịa bạn thẳng mặt, không nương tay, vẫn không chửi thề.", ah_unhinged: "Cà khịa phóng đại, kịch tính: ồn ào và không khoan nhượng, nhưng sạch sẽ.",
+      ah_kids: "Cho trẻ nhỏ: nhẹ nhàng, khích lệ, từ ngữ đơn giản, không thô tục hay đáng sợ.", ah_friendly: "Ấm áp, vui vẻ, trêu nhẹ, không chửi thề.", ah_savage: "Cà khịa bạn thẳng mặt, không nương tay, vẫn không chửi thề.",
       tone_low: "Cho trẻ em", tone_high: "Gắt nhất",
       h_memory: "Những gì mình biết về bạn", mem_told: "bạn đã kể", mem_style: "Bạn thích mình nói chuyện thế nào", mem_lately: "Gần đây", mem_lessons: "Những điều bạn đã sửa cho mình",
       mem_empty: "Chưa có gì. Mình học trong lúc chơi cùng bạn: bạn đang làm gì, bạn thích mình nói thế nào và những gì bạn sửa cho mình. Tất cả chỉ lưu trên PC của bạn.", mem_sessions: "học từ {n} phiên", mem_looked: "đã lưu {n} câu trả lời mình tra", mem_wait: "Mình trả lời {n} giây sau khi bạn ngừng nói",
@@ -1022,7 +1039,7 @@
       forget: "Lupakan", sure: "Yakin?", says: "akan bilang",
       woof: "Guk!", voice_pick: "Suara", voice_openai: "OpenAI (bawaan)", live_call: "Panggilan langsung di ponsel (paling cepat, tapi pakai suara dan otak OpenAI)",
       attitude: "Cara dia bicara", a_friendly: "Ramah", a_blunt: "Blak-blakan", a_savage: "Sadis", a_kids: "Untuk anak", a_unhinged: "Brutal",
-      ah_kids: "Untuk anak kecil: lembut dan menyemangati, kata-kata sederhana, tanpa yang kasar atau menakutkan.", ah_friendly: "Hangat dan seru, menggoda pelan, tanpa umpatan.", ah_blunt: "Blak-blakan dan suka ngatur, nge-roast permainan jelekmu, tanpa umpatan.", ah_savage: "Nge-roast kamu habis-habisan, tetap tanpa umpatan.", ah_unhinged: "Roasting lebay dan dramatis: berisik dan tanpa ampun, tapi bersih.",
+      ah_kids: "Untuk anak kecil: lembut dan menyemangati, kata-kata sederhana, tanpa yang kasar atau menakutkan.", ah_friendly: "Hangat dan seru, menggoda pelan, tanpa umpatan.", ah_savage: "Nge-roast kamu habis-habisan, tetap tanpa umpatan.",
       tone_low: "Untuk anak", tone_high: "Paling liar",
       h_memory: "Yang kutahu tentangmu", mem_told: "kamu yang bilang", mem_style: "Cara bicara yang kamu suka", mem_lately: "Belakangan ini", mem_lessons: "Yang kamu koreksi",
       mem_empty: "Belum ada. Aku belajar sambil kita main: apa yang sedang kamu kejar, cara bicara yang kamu suka, dan apa yang kamu koreksi. Semuanya tetap di PC-mu.", mem_sessions: "belajar dari {n} sesi", mem_looked: "{n} jawaban yang kucari, disimpan", mem_wait: "Aku menjawab {n} dtk setelah kamu berhenti bicara",
@@ -1061,7 +1078,7 @@
       forget: "Забыть", sure: "Точно?", says: "скажет",
       woof: "Гав!", voice_pick: "Голос", voice_openai: "OpenAI (встроенный)", live_call: "Живой звонок на телефоне (быстрее всего, но голос и мозг OpenAI)",
       attitude: "Как он с тобой говорит", a_friendly: "Дружелюбно", a_blunt: "Прямо", a_savage: "Жёстко", a_kids: "Для детей", a_unhinged: "Без тормозов",
-      ah_kids: "Для маленьких детей: мягко и ободряюще, простые слова, ничего грубого или страшного.", ah_friendly: "Тепло и весело, подкалывает по-доброму, без мата.", ah_blunt: "Прямо и властно, подкалывает за плохую игру, без ругательств.", ah_savage: "Жёстко подкалывает тебя лично, но без ругательств.", ah_unhinged: "Театральные, преувеличенные подколы: громко и беспощадно, но без грязи.",
+      ah_kids: "Для маленьких детей: мягко и ободряюще, простые слова, ничего грубого или страшного.", ah_friendly: "Тепло и весело, подкалывает по-доброму, без мата.", ah_savage: "Жёстко подкалывает тебя лично, но без ругательств.",
       tone_low: "Для детей", tone_high: "Жёстче некуда",
       h_memory: "Что я о тебе знаю", mem_told: "ты мне сказал", mem_style: "Как тебе нравится, чтобы я говорил", mem_lately: "В последнее время", mem_lessons: "В чём ты меня поправил",
       mem_empty: "Пока ничего. Я учусь, пока мы играем: чем ты занят, как тебе нравится, чтобы я говорил, и в чём ты меня поправляешь. Всё остаётся на твоём ПК.", mem_sessions: "выучено за {n} сессий", mem_looked: "{n} найденных ответов сохранено", mem_wait: "Я отвечаю через {n} с после того, как ты замолчишь",
@@ -1184,6 +1201,9 @@
   // ---- the game, from the PC -------------------------------------------------
   let status = {};
   let voiceOn = "pc";
+  // (How often a PC that speaks replies elsewhere is told again.)
+  const VOICE_RETELL_MS = 5000;
+  let voiceToldAt = 0;
   function pct(g) { return g ? Math.max(0, Math.min(100, g.percent)) : 0; }
   function gaugeText(g) {
     if (!g) return "—";
@@ -1254,6 +1274,16 @@
     mb.textContent = muted ? t("b_unmute") : t("b_mute");
     mb.dataset.cmd = muted ? "unmute" : "mute";
     voiceOn = state.voice_on || voiceOn;
+    // With the call wanted, replies are spoken here (the page is on the PC
+    // itself): a PC set to speak them elsewhere — a choice from before,
+    // kept by a page left open across a restart — is told so again.
+    if (canLive() && liveWanted && voiceOn !== "phone") {
+      voiceOn = "phone";
+      if (Date.now() - voiceToldAt > VOICE_RETELL_MS) {
+        voiceToldAt = Date.now();
+        postJson("/api/voice", { on: voiceOn }).catch(() => {});
+      }
+    }
     for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
     renderVoices(status.voices, status.voice);
     $("liveCallRow").style.display = status.live ? "" : "none";
@@ -2012,8 +2042,9 @@
   // How it talks: a bar from the gentlest level to the wildest, as the PC
   // lists them (status.tone.levels: each one's name); the words for each
   // are this page's (a_<name>, ah_<name>). The PC keeps where the bar is
-  // set (status.tone.set) and the level it talks at (status.tone.now); no
-  // level swears, so the whole bar is everyone's. A live call is retuned
+  // set (status.tone.set) and the level it talks at (status.tone.now); the
+  // levels past the highest open one are listed only while the player's
+  // password opened them (renderLock). A live call is retuned
   // once the PC reports a new level (render), the conversation kept. (A bar
   // just moved shows where it was moved to until the PC's status catches
   // up.)
@@ -2137,8 +2168,39 @@
         showLevel(tone.now);
       }
     }
+    renderLock(tone);
     lookTone();
   }
+  // The levels past the highest open one open with the player's password
+  // (the PC keeps it; the first one given is theirs): the bar lists them
+  // only while open (status.tone: lockable, unlocked, chosen, and how many
+  // wrong passwords were given).
+  let lockWrongSeen = null;
+  function renderLock(tone) {
+    $("toneLock").hidden = !tone.lockable;
+    if (!tone.lockable) return;
+    $("lockShut").hidden = !tone.unlocked;
+    $("lockOpen").hidden = !!tone.unlocked || !$("lockForm").hidden;
+    if (tone.unlocked) { $("lockForm").hidden = true; $("lockNote").textContent = ""; }
+    const wrong = Number(tone.wrong) || 0;
+    if (lockWrongSeen !== null && wrong > lockWrongSeen) $("lockNote").textContent = t("lock_wrong");
+    lockWrongSeen = wrong;
+  }
+  $("lockOpen").addEventListener("click", () => {
+    $("lockOpen").hidden = true;
+    $("lockForm").hidden = false;
+    $("lockNote").textContent = (status.tone && !status.tone.chosen) ? t("lock_choose") : "";
+    $("lockWord").focus();
+  });
+  function sendLockWord() {
+    const word = $("lockWord").value;
+    if (!word.trim()) return;
+    $("lockWord").value = "";
+    postJson("/api/unlock", { password: word }).catch(() => {});
+  }
+  $("lockGo").addEventListener("click", sendLockWord);
+  $("lockWord").addEventListener("keydown", (e) => { if (e.key === "Enter") sendLockWord(); });
+  $("lockShut").addEventListener("click", () => postJson("/api/lock", {}).catch(() => {}));
   // While a finger (or the mouse) is on the bar, the bar is the player's:
   // the PC's status does not move it under them, however long they hold it.
   let toneTouched = false;
@@ -2781,8 +2843,10 @@
     responding: 0, respondWanted: false, flushing: false, tone: "", api: "ga" };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
   // The live call can be turned off (liveWanted, with the settings): then
-  // Grok answers and the voice picked speaks, on the phone too.
-  function wantLive() { return canLive() && liveWanted && (voiceOn === "phone" || voiceOn === "both"); }
+  // Grok answers in the PC's voice. The page is the voice (it is on the PC
+  // itself): where replies are spoken is no choice to make here (a PC told
+  // "the PC's speakers" had no call, and Grok answered, slowly).
+  function wantLive() { return canLive() && liveWanted; }
   function liveAudio() {
     if (!liveCall.audio) {
       const a = document.createElement("audio");
