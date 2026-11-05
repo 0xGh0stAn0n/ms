@@ -34,6 +34,7 @@
 //! to its own answers and the Windows voice.
 
 pub mod brain;
+pub mod cast;
 pub mod eleven;
 pub mod images;
 pub mod knowledge;
