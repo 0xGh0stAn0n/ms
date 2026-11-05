@@ -31,7 +31,7 @@ name: MapleSyrup standalone
 # A commit message with [vendor-only] runs the vendor job alone.
 on:
   push:
-    branches: ["master", "claude/**"]
+    branches: ["main", "master", "claude/**"]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
